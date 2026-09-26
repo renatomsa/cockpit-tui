@@ -1,0 +1,36 @@
+[package]
+name = "copilot-tui"
+version = "0.1.0"
+description = "Cockpit de terminal para desenvolvedores: relógio, agenda, sistema, worktrees e sessões do Claude"
+license = "MIT"
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+chrono-tz = "0.10.4"
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+directories = "6.0.0"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+iana-time-zone = "0.1.65"
+ratatui = "0.30.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "fs", "net"] }
+toml = "1.1.6"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+
+[[bin]]
+name = "cockpit"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

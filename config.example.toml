@@ -1,0 +1,35 @@
+# Config do cockpit — copie para ~/.config/cockpit/config.toml
+# (ou rode `cockpit config init`). Toda chave é opcional.
+
+# Tema inicial. Embutidos: dracula, catppuccin-mocha, tokyo-night, nord,
+# gruvbox-dark, one-dark, solarized-dark, terminal.
+# Temas extras: ~/.config/cockpit/themes/<nome>.toml. A tecla `t` troca ao vivo
+# e o último escolhido fica lembrado em ~/.local/state/cockpit/state.toml.
+theme = "dracula"
+
+# "pt-BR" ou "en" (nomes de dia e mês).
+locale = "pt-BR"
+
+[clock]
+seconds = true
+hour12 = false
+
+# Relógios extras, mostrados ao lado da cidade atual.
+[[clock.extra]]
+label = "Orlando"
+tz = "America/New_York"
+
+[location]
+# Sem `city`, a cidade vem da geolocalização por IP, refeita a cada `refresh_minutes`.
+# city = "Rio de Janeiro"
+# region = "Rio de Janeiro"
+# country = "Brazil"
+# timezone = "America/Sao_Paulo"
+# lat = -22.9068
+# lon = -43.1729
+refresh_minutes = 60
+
+[layout]
+wide_min_cols = 110     # a partir daqui, duas colunas
+compact_max_rows = 30   # abaixo daqui, só o hero
+left_percent = 62       # largura da coluna esquerda
