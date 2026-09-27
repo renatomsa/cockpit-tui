@@ -292,7 +292,7 @@ fn gauge_color(t: &Theme, pct: f64, lvl: Level) -> Color {
 
 /// Barra de linha grossa: parte cheia e trilho, com meia célula de resolução (`╸`).
 /// Evita os blocos parciais (▁▕▏), que em muitas fontes encostam na linha vizinha.
-fn bar(pct: f64, width: usize) -> (String, String) {
+pub(crate) fn bar(pct: f64, width: usize) -> (String, String) {
     let halves = ((pct.clamp(0.0, 100.0) / 100.0) * (width * 2) as f64).round() as usize;
     let (full, half) = (halves / 2, halves % 2 == 1);
     let mut filled = "━".repeat(full);

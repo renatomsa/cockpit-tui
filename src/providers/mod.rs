@@ -6,6 +6,8 @@ pub mod geo;
 pub mod git;
 pub mod ping;
 pub mod system;
+pub mod transcript;
+pub mod usage;
 
 use std::time::Duration;
 

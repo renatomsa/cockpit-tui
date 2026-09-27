@@ -92,6 +92,14 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
                 (st("›", muted), "último pedido que você fez"),
                 (st("v360/cfs", muted), "repositório/worktree em que a conversa está"),
                 (st("há 8m", muted), "desde a última mudança de status"),
+                (st("Sessão 5h ━━", Style::new().fg(t.gauge_low)), "quanto do limite de 5 h do plano já foi usado (o mesmo do /usage)"),
+                (st("Semana ━━", Style::new().fg(t.gauge_low)), "quanto do limite semanal já foi usado; ao lado, quando reinicia"),
+                (st("⟳ rodando", Style::new().fg(t.accent)), "tokens da rodada em andamento, desde o seu último pedido"),
+                (st("última rodada", muted), "tokens da rodada que terminou"),
+                (st("3.2k saída", Style::new().fg(t.spark)), "tokens gerados pelo Claude (texto, código e raciocínio)"),
+                (st("1.4M processados", fg), "tudo que passou pelas chamadas da rodada, incluindo cache lido"),
+                (st("contexto 145k", fg), "tamanho da conversa enviada na última chamada"),
+                (st("2 subagentes", muted), "subagentes disparados na rodada (o gasto deles entra na soma)"),
             ]);
             ("Claude", v)
         }

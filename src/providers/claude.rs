@@ -7,7 +7,6 @@
 use std::{
     collections::HashMap,
     fs,
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -17,7 +16,10 @@ use notify::{RecursiveMode, Watcher};
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 
-use super::Snapshot;
+use super::{
+    Snapshot,
+    transcript::{Info, Tracker, TurnStats},
+};
 use crate::config::{ClaudeConfig, expand_home};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -60,6 +62,8 @@ pub struct Session {
     /// Recapitulação do Claude ("Seu objetivo era…") ou o último pedido.
     pub summary: Option<String>,
     pub updated_at: Option<DateTime<Utc>>,
+    /// Tokens da rodada atual (ou da última, se parada).
+    pub turn: Option<TurnStats>,
 }
 
 #[derive(Deserialize, Default)]
@@ -157,7 +161,7 @@ fn read_sessions(dir: &Path, cfg: &ClaudeConfig, cache: &mut TranscriptCache, no
             continue;
         }
         let t = cache.get(dir, &id);
-        let mut s = build(&f, pid, id, t);
+        let mut s = build(&f, pid, id, t.as_ref());
         if alive {
             live.push(s);
         } else {
@@ -176,7 +180,7 @@ fn read_sessions(dir: &Path, cfg: &ClaudeConfig, cache: &mut TranscriptCache, no
     Ok(SessionsSnapshot { live, recent })
 }
 
-fn build(f: &SessionFile, pid: u32, id: String, t: Option<&Transcript>) -> Session {
+fn build(f: &SessionFile, pid: u32, id: String, t: Option<&Info>) -> Session {
     let status = match f.status.as_deref() {
         Some("waiting") => Status::Waiting,
         Some("busy") => Status::Busy,
@@ -204,6 +208,7 @@ fn build(f: &SessionFile, pid: u32, id: String, t: Option<&Transcript>) -> Sessi
         cwd,
         summary: summary.map(|s| one_line(&s, 300)),
         updated_at: updated,
+        turn: t.and_then(|t| t.turn.clone()),
     }
 }
 
@@ -229,92 +234,28 @@ fn one_line(s: &str, max: usize) -> String {
     if s.chars().count() > max { s.chars().take(max - 1).chain(['…']).collect() } else { s }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Transcript {
-    title: Option<String>,
-    summary: Option<String>,
-    last_prompt: Option<String>,
-    cwd: Option<PathBuf>,
-}
-
-/// Transcrições lidas, por id; só relê quando o arquivo cresce.
+/// Uma transcrição acompanhada por conversa; o caminho é descoberto uma vez.
 #[derive(Default)]
 struct TranscriptCache {
-    paths: HashMap<String, PathBuf>,
-    parsed: HashMap<String, (u64, Transcript)>,
+    trackers: HashMap<String, Tracker>,
 }
 
 impl TranscriptCache {
-    fn get(&mut self, dir: &Path, id: &str) -> Option<&Transcript> {
-        if !self.paths.contains_key(id) {
+    fn get(&mut self, dir: &Path, id: &str) -> Option<Info> {
+        if !self.trackers.contains_key(id) {
             let file = format!("{id}.jsonl");
             let found = fs::read_dir(dir.join("projects")).ok()?.flatten().map(|e| e.path().join(&file)).find(|p| p.is_file())?;
-            self.paths.insert(id.to_string(), found);
+            self.trackers.insert(id.to_string(), Tracker::new(found));
         }
-        let path = self.paths.get(id)?.clone();
-        let len = fs::metadata(&path).ok()?.len();
-        if self.parsed.get(id).is_none_or(|(l, _)| *l != len) {
-            let t = read_transcript(&path).unwrap_or_default();
-            self.parsed.insert(id.to_string(), (len, t));
-        }
-        self.parsed.get(id).map(|(_, t)| t)
+        let t = self.trackers.get_mut(id)?;
+        t.refresh();
+        Some(t.info())
     }
 
     fn retain<'a>(&mut self, ids: impl Iterator<Item = &'a str>) {
         let keep: std::collections::HashSet<&str> = ids.collect();
-        self.paths.retain(|k, _| keep.contains(k.as_str()));
-        self.parsed.retain(|k, _| keep.contains(k.as_str()));
+        self.trackers.retain(|k, _| keep.contains(k.as_str()));
     }
-}
-
-const TAIL: u64 = 64 * 1024;
-const HEAD: u64 = 16 * 1024;
-
-/// Lê só o fim (64 KB) do arquivo; o título, se não estiver lá, vem do começo (16 KB).
-fn read_transcript(path: &Path) -> std::io::Result<Transcript> {
-    let mut f = fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    let start = len.saturating_sub(TAIL);
-    f.seek(SeekFrom::Start(start))?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    let text = String::from_utf8_lossy(&buf);
-    // Começando no meio do arquivo, a primeira linha está cortada.
-    let body = if start > 0 { text.split_once('\n').map_or("", |x| x.1) } else { &text };
-    let mut t = parse_lines(body.lines().rev());
-    if t.title.is_none() && start > 0 {
-        let mut head = vec![0u8; HEAD.min(len) as usize];
-        f.seek(SeekFrom::Start(0))?;
-        f.read_exact(&mut head)?;
-        let head = String::from_utf8_lossy(&head);
-        t.title = parse_lines(head.lines()).title;
-    }
-    Ok(t)
-}
-
-/// Pega o primeiro valor de cada campo na ordem dada (do fim para o começo, no caso do tail).
-fn parse_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Transcript {
-    let mut t = Transcript::default();
-    for line in lines {
-        if t.title.is_some() && t.summary.is_some() && t.last_prompt.is_some() && t.cwd.is_some() {
-            break;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).filter(|x| !x.is_empty()).map(str::to_string);
-        match s("type").as_deref() {
-            Some("custom-title") if t.title.is_none() => t.title = s("customTitle").or_else(|| s("title")),
-            Some("ai-title") if t.title.is_none() => t.title = s("aiTitle"),
-            Some("last-prompt") if t.last_prompt.is_none() => t.last_prompt = s("lastPrompt"),
-            Some("system") if t.summary.is_none() && s("subtype").as_deref() == Some("away_summary") => {
-                t.summary = s("content")
-            }
-            _ => {}
-        }
-        if t.cwd.is_none() {
-            t.cwd = s("cwd").map(PathBuf::from);
-        }
-    }
-    t
 }
 
 #[cfg(test)]
@@ -335,23 +276,6 @@ mod tests {
         assert!(is_alive(pid, Some(&start)));
         assert!(!is_alive(pid, Some("1")), "PID reciclado não pode contar como vivo");
         assert!(!is_alive(u32::MAX - 1, None));
-    }
-
-    #[test]
-    fn transcript_tail_wins() {
-        let lines = [
-            r#"{"type":"ai-title","aiTitle":"Título antigo"}"#,
-            r#"{"type":"user","cwd":"/home/u/v360"}"#,
-            r#"lixo não-json"#,
-            r#"{"type":"ai-title","aiTitle":"Shape técnico"}"#,
-            r#"{"type":"last-prompt","lastPrompt":"continue"}"#,
-            r#"{"type":"system","subtype":"away_summary","content":"Estou no meio do rebase. (disable recaps in /config)","cwd":"/home/u/v360/.claude/worktrees/x"}"#,
-        ];
-        let t = parse_lines(lines.iter().rev().copied());
-        assert_eq!(t.title.as_deref(), Some("Shape técnico"));
-        assert_eq!(t.last_prompt.as_deref(), Some("continue"));
-        assert_eq!(t.cwd, Some(PathBuf::from("/home/u/v360/.claude/worktrees/x")));
-        assert_eq!(one_line(t.summary.as_deref().unwrap(), 300), "Estou no meio do rebase.");
     }
 
     fn fixture() -> (PathBuf, u32, String) {

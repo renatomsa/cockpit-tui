@@ -206,11 +206,15 @@ pub struct ClaudeConfig {
     /// Conversas encerradas há menos de N horas aparecem como "recentes" (para `r` retomar).
     pub recent_hours: u64,
     pub recent_max: usize,
+    /// Mostra os limites do plano (sessão de 5 h e semana), como o `/usage`. Lê o login
+    /// OAuth do Claude Code (`.credentials.json`) e consulta api.anthropic.com.
+    pub usage_limits: bool,
+    pub usage_refresh_secs: u64,
 }
 
 impl Default for ClaudeConfig {
     fn default() -> Self {
-        Self { dir: None, recent_hours: 24, recent_max: 5 }
+        Self { dir: None, recent_hours: 24, recent_max: 5, usage_limits: true, usage_refresh_secs: 180 }
     }
 }
 

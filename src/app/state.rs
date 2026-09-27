@@ -13,6 +13,7 @@ use crate::{
         git::{Worktree, WorktreesSnapshot},
         ping::PingSnapshot,
         system::SystemSnapshot,
+        usage::UsageSnapshot,
     },
     shell::ExitTarget,
     terminal::Launcher,
@@ -79,6 +80,7 @@ pub struct AppState {
     pub self_pid: u32,
     pub worktrees: Snapshot<WorktreesSnapshot>,
     pub sessions: Snapshot<SessionsSnapshot>,
+    pub usage: Snapshot<UsageSnapshot>,
     /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
     /// Índice na lista filtrada de worktrees.
@@ -125,6 +127,7 @@ impl AppState {
             self_pid: std::process::id(),
             worktrees: Snapshot::default(),
             sessions: Snapshot::default(),
+            usage: Snapshot::default(),
             wt_sessions: HashMap::new(),
             wt_sel: 0,
             filter: String::new(),

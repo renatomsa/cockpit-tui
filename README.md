@@ -92,6 +92,17 @@ O painel Claude lista as conversas abertas (lidas de `~/.claude/sessions`), com 
 
 Um programa não consegue mudar a pasta do shell que o abriu. Por isso o `Enter` depende da função instalada pelo `shell-init` (zsh, bash ou fish): o cockpit grava a pasta escolhida num arquivo temporário e a função faz o `cd` quando ele sai. Sem a função, o `Enter` copia o comando `cd …` para a área de transferência e mostra como ligá-la.
 
+### Tokens e limites do plano
+
+No topo do painel Claude ficam os limites do plano, os mesmos do `/usage`: a sessão de 5 h e a semana, com o percentual usado e quando cada um reinicia. Para isso o cockpit lê o login OAuth que o Claude Code guarda em `~/.claude/.credentials.json` e consulta o mesmo endpoint que ele, a cada 3 min. O token só é lido e enviado para `api.anthropic.com`: o cockpit nunca o renova nem grava. Com o login vencido, o painel pede para abrir o `claude`, que renova sozinho. Com API key não existe limite de plano. Desligue com `[claude].usage_limits = false`.
+
+Cada conversa mostra o gasto da rodada, desde o seu último pedido: `⟳ rodando há 7m` enquanto trabalha, `última rodada` quando para. São três números:
+- **saída:** tokens gerados, incluindo raciocínio.
+- **processados:** tudo que passou pelas chamadas da rodada, com o cache lido.
+- **contexto:** o tamanho da conversa na última chamada.
+
+O gasto dos subagentes disparados na rodada entra na soma. A transcrição é lida de forma incremental: o arquivo inteiro na primeira vez e, depois, só o que foi acrescentado.
+
 O `C` e o `r` abrem uma aba nova em vez de fechar o cockpit. O terminal é detectado: tmux (janela nova), Windows Terminal pelo WSL (aba nova na mesma janela, via `wt.exe` e `wsl.exe --cd`), kitty, WezTerm ou gnome-terminal. O comando roda no seu shell de login interativo, para ter o mesmo PATH de sempre, e a aba continua aberta quando o Claude termina. Para outro terminal, defina `[terminal].new_tab` no config. Se nenhum for reconhecido, os dois voltam ao comportamento antigo: saem e rodam o Claude no shell atual pelo wrapper.
 
 Custo: o `git status` roda a cada 30 s (`refresh_secs`) no modo rápido, sem contar arquivos não rastreados; a contagem completa vai a cada 5 min ou quando algo muda no `.git`. O tamanho em disco é recalculado a cada 10 min em segundo plano.

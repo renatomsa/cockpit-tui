@@ -62,6 +62,11 @@ refresh_secs = 30             # git status de cada worktree
 # dir = "~/.claude"           # padrão: $CLAUDE_CONFIG_DIR ou ~/.claude
 recent_hours = 24             # conversas encerradas há menos disso aparecem em "recentes"
 recent_max = 5
+# Limites do plano (sessão de 5 h e semana), os mesmos do `/usage`. Lê o login do
+# Claude Code em ~/.claude/.credentials.json e consulta api.anthropic.com. O token só
+# é lido; nunca é renovado nem gravado pelo cockpit.
+usage_limits = true
+usage_refresh_secs = 180
 
 [terminal]
 # Como abrir a aba nova do `C` (worktrees) e do `r` (conversas). Vazio = automático:
