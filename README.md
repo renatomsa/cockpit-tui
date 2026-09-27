@@ -82,6 +82,8 @@ O painel Sistema mostra CPU e load, memória, swap, pressão (PSI), discos, rede
 
 No vermelho, a métrica e os maiores ofensores piscam, a borda do painel fica vermelha e o motivo aparece também na barra de status, que continua visível no modo compacto. Para baixar, o valor precisa cair 3 pontos abaixo do limiar, o que evita pisca-pisca. Tudo isso é configurável em `[system.danger]`.
 
+No rodapé do painel fica o bloco MÁQUINA: sistema operacional, processador, núcleos físicos e threads, placa de vídeo e memória. No WSL, o Linux só enxerga a VM. Por isso os números vêm da máquina real, lidos uma vez do Windows pelo PowerShell na abertura, e o que o WSL recebe aparece entre parênteses, como em `8 threads (WSL usa 6)`. No Linux nativo, a placa de vídeo vem do `nvidia-smi` ou do `lspci`.
+
 O ping mede o tempo de conexão TCP a `1.1.1.1:443`, porque o WSL vem com ICMP sem root desligado (`net.ipv4.ping_group_range = 1 0`).
 
 ## Worktrees e conversas do Claude

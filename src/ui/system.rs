@@ -49,7 +49,18 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let h = inner.height as usize;
     let n = s.config.system.top_n;
     let has_procs = !d.top_cpu.is_empty() || !d.top_mem.is_empty();
-    let top_rows = if has_procs && h >= 10 { (n + 1).min(h - 8) } else { 0 };
+    // Especificações no rodapé: completas (cabeçalho + 5) com espaço, compactas (+ 3) se
+    // apertado, e nada abaixo disso.
+    let specs = spec_lines(s, w, h);
+    let specs_h = specs.len();
+    let h_rest = h - specs_h;
+    let top_rows = if has_procs && h_rest >= 10 { (n + 1).min(h_rest - 8) } else { 0 };
+    if specs_h > 0 {
+        let y = inner.y + (h - specs_h) as u16;
+        f.render_widget(Paragraph::new(specs), Rect { y, height: specs_h as u16, ..inner });
+    }
+    let h = h_rest;
+    let inner = Rect { height: h as u16, ..inner };
 
     let rows = metric_rows(s, d, w);
     let lines = fit_by_priority(rows, h - top_rows);
@@ -63,6 +74,61 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
         let r = Rect { y, height: top_rows as u16, ..inner };
         f.render_widget(Paragraph::new(top_lines(s, d, w, top_rows - 1)), r);
     }
+}
+
+/// Bloco "MÁQUINA": SO, processador, núcleos, placa de vídeo e memória. No WSL, os
+/// números são da máquina e, entre parênteses, quanto o WSL recebe.
+fn spec_lines(s: &AppState, w: usize, h: usize) -> Vec<Line<'static>> {
+    let Some(sp) = &s.specs.data else { return Vec::new() };
+    let t = s.theme();
+    let compact = h < 24;
+    if h < 16 {
+        return Vec::new();
+    }
+    let lbl = |x: &str| Span::styled(format!("{x:<9}"), Style::new().fg(t.accent).add_modifier(Modifier::BOLD));
+    let val = |x: String| Span::styled(x, Style::new().fg(t.fg));
+    let dim = |x: String| Span::styled(x, Style::new().fg(t.muted));
+
+    let so = match (&sp.host_os, sp.wsl) {
+        (Some(host), true) => format!("{} · WSL2 no {host}", sp.os),
+        (None, true) => format!("{} · WSL2", sp.os),
+        _ => sp.os.clone(),
+    };
+    let cores = match sp.cores {
+        Some(c) => format!("{c} físicos · {} threads", sp.threads),
+        None => format!("{} threads", sp.threads),
+    };
+    let cores_wsl = (sp.wsl && sp.visible_threads != sp.threads).then(|| format!("  (WSL usa {})", sp.visible_threads));
+    let gpu = if sp.gpus.is_empty() { "não identificada".to_string() } else { sp.gpus.join(" · ") };
+    let mem = bytes(sp.mem_total.unwrap_or(sp.visible_mem));
+    let mem_wsl = (sp.wsl && sp.mem_total.is_some()).then(|| format!("  (WSL usa {})", bytes(sp.visible_mem)));
+    let fit = |line: Line<'static>| -> Line<'static> {
+        // corta o último pedaço se não couber
+        let mut line = line;
+        while line.width() > w && line.spans.len() > 2 {
+            line.spans.pop();
+        }
+        line
+    };
+
+    let head = "MÁQUINA ";
+    let mut out = vec![Line::from(vec![
+        Span::styled(head, Style::new().fg(t.muted)),
+        Span::styled("─".repeat(w.saturating_sub(head.chars().count())), Style::new().fg(t.border)),
+    ])];
+    let so_line = Line::from(vec![lbl("SO"), val(truncate(&so, w.saturating_sub(9)))]);
+    if compact {
+        out.push(so_line);
+        out.push(fit(Line::from(vec![lbl("CPU"), val(truncate(&sp.cpu, w.saturating_sub(9))), dim(format!(" · {cores}"))])));
+        out.push(fit(Line::from(vec![lbl("GPU"), val(truncate(&gpu, w.saturating_sub(9))), dim(format!(" · RAM {mem}"))])));
+    } else {
+        out.push(so_line);
+        out.push(Line::from(vec![lbl("CPU"), val(truncate(&sp.cpu, w.saturating_sub(9)))]));
+        out.push(fit(Line::from(vec![lbl("NÚCLEOS"), val(cores)].into_iter().chain(cores_wsl.map(dim)).collect::<Vec<_>>())));
+        out.push(Line::from(vec![lbl("GPU"), val(truncate(&gpu, w.saturating_sub(9)))]));
+        out.push(fit(Line::from(vec![lbl("MEMÓRIA"), val(mem)].into_iter().chain(mem_wsl.map(dim)).collect::<Vec<_>>())));
+    }
+    out
 }
 
 /// Mantém as linhas de menor número de prioridade que cabem, na ordem original.

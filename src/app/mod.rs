@@ -45,7 +45,10 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
     providers::claude::spawn(state.config.claude.clone(), sess_tx);
     let (usage_tx, mut usage_rx) = watch::channel(Snapshot::default());
     providers::usage::spawn(state.config.claude.clone(), usage_tx);
-    let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive, mut usage_alive) = (true, true, true, true, true);
+    let (specs_tx, mut specs_rx) = watch::channel(Snapshot::default());
+    providers::specs::spawn(specs_tx);
+    let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive, mut usage_alive, mut specs_alive) =
+        (true, true, true, true, true, true);
     // Resultados de efeitos (ex.: o kill) voltam como ações.
     let (act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
 
@@ -93,6 +96,10 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
             changed = usage_rx.changed(), if usage_alive => match changed {
                 Ok(()) => Action::Usage(usage_rx.borrow_and_update().clone()),
                 Err(_) => { usage_alive = false; continue }
+            },
+            changed = specs_rx.changed(), if specs_alive => match changed {
+                Ok(()) => Action::Specs(specs_rx.borrow_and_update().clone()),
+                Err(_) => { specs_alive = false; continue }
             },
             Some(a) = act_rx.recv() => a,
         };

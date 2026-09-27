@@ -82,6 +82,8 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
                 (st("perda 0%", muted), "tentativas sem resposta entre as últimas 30"),
                 (st("×10", fg), "processos com o mesmo nome, somados"),
                 (st("107%", fg), "CPU em % de um núcleo (passa de 100 quando usa vários)"),
+                (st("MÁQUINA", muted), "especificações; no WSL, da máquina real, com o que o WSL recebe entre parênteses"),
+                (st("(WSL usa 6)", muted), "núcleos ou memória que a VM do WSL enxerga (ajuste em .wslconfig)"),
             ],
         ),
         Panel::Sessions => {

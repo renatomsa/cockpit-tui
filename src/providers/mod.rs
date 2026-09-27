@@ -5,6 +5,7 @@ pub mod claude;
 pub mod geo;
 pub mod git;
 pub mod ping;
+pub mod specs;
 pub mod system;
 pub mod transcript;
 pub mod usage;

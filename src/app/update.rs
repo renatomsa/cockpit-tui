@@ -11,6 +11,7 @@ use crate::{
         geo::Geo,
         git::WorktreesSnapshot,
         ping::PingSnapshot,
+        specs::Specs,
         system::SystemSnapshot,
         usage::UsageSnapshot,
     },
@@ -29,6 +30,7 @@ pub enum Action {
     Worktrees(Snapshot<WorktreesSnapshot>),
     Sessions(Snapshot<SessionsSnapshot>),
     Usage(Snapshot<UsageSnapshot>),
+    Specs(Snapshot<Specs>),
     /// Mensagem para a barra de status (ex.: resultado de um efeito).
     Notice(String),
 }
@@ -95,6 +97,10 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
                 .and_then(|id| list.iter().position(|x| x.id == id))
                 .unwrap_or(s.sess_sel)
                 .min(list.len().saturating_sub(1));
+            Outcome::redraw()
+        }
+        Action::Specs(snap) => {
+            s.specs = snap;
             Outcome::redraw()
         }
         Action::Usage(snap) => {

@@ -12,6 +12,7 @@ use crate::{
         geo::Geo,
         git::{Worktree, WorktreesSnapshot},
         ping::PingSnapshot,
+        specs::Specs,
         system::SystemSnapshot,
         usage::UsageSnapshot,
     },
@@ -81,6 +82,7 @@ pub struct AppState {
     pub worktrees: Snapshot<WorktreesSnapshot>,
     pub sessions: Snapshot<SessionsSnapshot>,
     pub usage: Snapshot<UsageSnapshot>,
+    pub specs: Snapshot<Specs>,
     /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
     /// Índice na lista filtrada de worktrees.
@@ -128,6 +130,7 @@ impl AppState {
             worktrees: Snapshot::default(),
             sessions: Snapshot::default(),
             usage: Snapshot::default(),
+            specs: Snapshot::default(),
             wt_sessions: HashMap::new(),
             wt_sel: 0,
             filter: String::new(),
