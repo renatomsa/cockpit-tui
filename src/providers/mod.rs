@@ -2,6 +2,7 @@
 //! A UI só lê o valor mais recente; nenhuma fila cresce e nenhum provider bloqueia a tela.
 
 pub mod claude;
+pub mod docker;
 pub mod geo;
 pub mod git;
 pub mod ping;

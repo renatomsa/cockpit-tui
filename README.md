@@ -39,6 +39,8 @@ Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 | `Enter` (Claude) | sai e vai para a pasta da conversa |
 | `r` (Claude) | retoma uma conversa encerrada (`claude --resume`) numa aba nova |
 | `i` | legenda dos símbolos do painel em foco |
+| `K` (Docker) | para o container selecionado (`docker stop`), com confirmação |
+| `X` (Docker) | derruba tudo: `docker compose down --remove-orphans` em cada projeto e `docker stop` nos soltos, com confirmação |
 | `←→` `↑↓` (painel Sistema) | escolhe a coluna (TOP CPU / TOP MEM) e o processo |
 | `K` (painel Sistema) | encerra o processo com SIGTERM, depois de pedir confirmação |
 | `?` | ajuda |
@@ -85,6 +87,15 @@ No vermelho, a métrica e os maiores ofensores piscam, a borda do painel fica ve
 No rodapé do painel fica o bloco MÁQUINA: sistema operacional, processador, núcleos físicos e threads, placa de vídeo e memória. No WSL, o Linux só enxerga a VM. Por isso os números vêm da máquina real, lidos uma vez do Windows pelo PowerShell na abertura, e o que o WSL recebe aparece entre parênteses, como em `8 threads (WSL usa 6)`. No Linux nativo, a placa de vídeo vem do `nvidia-smi` ou do `lspci`.
 
 O ping mede o tempo de conexão TCP a `1.1.1.1:443`, porque o WSL vem com ICMP sem root desligado (`net.ipv4.ping_group_range = 1 0`).
+
+## Docker
+
+O painel Docker, entre a Agenda e as Worktrees, lista os containers rodando: o equivalente ao `docker ps`, sem `-a`. Mostra nome, imagem, há quanto tempo está de pé, as portas publicadas e o projeto compose. A cor da bolinha é o healthcheck: verde saudável, azul sem healthcheck, amarelo iniciando, vermelho falhando. A lista vem direto do socket do daemon a cada 3 s, o que custa cerca de 1 ms, sem rodar a CLI.
+
+- `K` para o container selecionado com `docker stop`, que pode ser religado depois com `docker start`.
+- `X` derruba tudo. Para cada projeto compose roda `docker compose -p <projeto> --project-directory <pasta> -f <arquivos> down --remove-orphans`, com pasta e arquivos lidos das labels que o compose gravou; se eles não existem mais, roda só com `-p`. Containers fora de compose recebem `docker stop`. Volumes não são apagados.
+
+As duas teclas mostram antes o que vai rodar e só executam com `y`.
 
 ## Worktrees e conversas do Claude
 

@@ -3,11 +3,12 @@
 use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::state::{AppState, KillTarget, Panel, ProcCol};
+use super::state::{AppState, Confirm, KillTarget, Panel, ProcCol};
 use crate::{
     providers::{
         Snapshot,
         claude::{SessionsSnapshot, Status},
+        docker::{self, DockerCmd, DockerSnapshot},
         geo::Geo,
         git::WorktreesSnapshot,
         ping::PingSnapshot,
@@ -31,6 +32,7 @@ pub enum Action {
     Sessions(Snapshot<SessionsSnapshot>),
     Usage(Snapshot<UsageSnapshot>),
     Specs(Snapshot<Specs>),
+    Docker(Snapshot<DockerSnapshot>),
     /// Mensagem para a barra de status (ex.: resultado de um efeito).
     Notice(String),
 }
@@ -41,6 +43,8 @@ pub enum Effect {
     PersistTheme(String),
     /// SIGTERM, já confirmado pelo usuário.
     Kill(KillTarget),
+    /// Comandos do Docker já confirmados; `label` resume a ação na barra de status.
+    Docker { cmds: Vec<DockerCmd>, label: String },
     /// Copia para a área de transferência pelo terminal (OSC 52).
     Copy(String),
     /// Abre uma aba nova de terminal rodando `cmd` em `dir`; o cockpit continua aberto.
@@ -99,6 +103,12 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
                 .min(list.len().saturating_sub(1));
             Outcome::redraw()
         }
+        Action::Docker(snap) => {
+            s.docker = snap;
+            let n = s.docker.data.as_ref().map_or(0, |d| d.containers.len());
+            s.docker_sel = s.docker_sel.min(n.saturating_sub(1));
+            Outcome::redraw()
+        }
         Action::Specs(snap) => {
             s.specs = snap;
             Outcome::redraw()
@@ -124,8 +134,12 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
         s.quit = true;
         return Outcome::default();
     }
-    if let Some(target) = s.confirm_kill.take() {
-        let effect = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')).then_some(Effect::Kill(target));
+    if let Some(c) = s.confirm.take() {
+        let yes = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'));
+        let effect = yes.then_some(match c {
+            Confirm::Kill(t) => Effect::Kill(t),
+            Confirm::Docker { title, cmds, .. } => Effect::Docker { cmds, label: title },
+        });
         return Outcome { redraw: true, effect };
     }
     if s.show_help || s.show_legend {
@@ -138,6 +152,11 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
     }
     if s.focus == Panel::System && on_system_key(s, k.code) {
         return Outcome::redraw();
+    }
+    if s.focus == Panel::Docker
+        && let Some(out) = on_docker_key(s, k.code)
+    {
+        return out;
     }
     if s.focus == Panel::Worktrees
         && let Some(out) = on_worktrees_key(s, k.code)
@@ -203,6 +222,41 @@ fn step(sel: &mut usize, n: usize, code: KeyCode) -> bool {
         _ => return false,
     };
     true
+}
+
+fn on_docker_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
+    let containers = s.docker.data.as_ref().map(|d| d.containers.clone()).unwrap_or_default();
+    if step(&mut s.docker_sel, containers.len(), code) {
+        return Some(Outcome::redraw());
+    }
+    match code {
+        KeyCode::Char('K') => {
+            let c = containers.get(s.docker_sel)?;
+            s.confirm = Some(Confirm::Docker {
+                title: format!("parar {}", c.name),
+                lines: vec![format!("docker stop {}  ({})", c.name, c.image)],
+                cmds: vec![docker::stop_cmd(c)],
+            });
+            Some(Outcome::redraw())
+        }
+        KeyCode::Char('X') if !containers.is_empty() => {
+            let cmds = docker::down_all_plan(&containers);
+            let mut lines: Vec<String> = Vec::new();
+            let mut projects: Vec<&str> = containers.iter().filter_map(|c| c.compose.as_ref().map(|p| p.project.as_str())).collect();
+            projects.dedup();
+            for p in &projects {
+                let n = containers.iter().filter(|c| c.compose.as_ref().is_some_and(|x| x.project == *p)).count();
+                lines.push(format!("compose {p}: down --remove-orphans ({n} container{})", if n == 1 { "" } else { "s" }));
+            }
+            let loose = containers.iter().filter(|c| c.compose.is_none()).count();
+            if loose > 0 {
+                lines.push(format!("{loose} container{} fora de compose: docker stop", if loose == 1 { "" } else { "s" }));
+            }
+            s.confirm = Some(Confirm::Docker { title: format!("derrubar {} containers", containers.len()), lines, cmds });
+            Some(Outcome::redraw())
+        }
+        _ => None,
+    }
 }
 
 fn on_worktrees_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
@@ -297,7 +351,7 @@ fn on_system_key(s: &mut AppState, code: KeyCode) -> bool {
             if p.top_pid <= 1 || p.top_pid == s.self_pid {
                 s.notices.insert(0, format!("não encerro {} (pid {})", p.name, p.top_pid));
             } else {
-                s.confirm_kill = Some(KillTarget { pid: p.top_pid, name: p.name.clone() });
+                s.confirm = Some(Confirm::Kill(KillTarget { pid: p.top_pid, name: p.name.clone() }));
             }
         }
         _ => return false,
@@ -385,10 +439,10 @@ mod tests {
         update(&mut s, key(KeyCode::Down));
         let out = update(&mut s, key(KeyCode::Char('K')));
         assert!(out.effect.is_none());
-        assert_eq!(s.confirm_kill, Some(KillTarget { pid: 200, name: "cargo".into() }));
+        assert_eq!(s.confirm, Some(Confirm::Kill(KillTarget { pid: 200, name: "cargo".into() })));
         // qualquer tecla que não seja y cancela
         let out = update(&mut s, key(KeyCode::Char('n')));
-        assert!(out.effect.is_none() && s.confirm_kill.is_none());
+        assert!(out.effect.is_none() && s.confirm.is_none());
         update(&mut s, key(KeyCode::Char('K')));
         let out = update(&mut s, key(KeyCode::Char('y')));
         assert_eq!(out.effect, Some(Effect::Kill(KillTarget { pid: 200, name: "cargo".into() })));
@@ -405,7 +459,7 @@ mod tests {
         assert_eq!((s.proc_sel.col, s.proc_sel.row), (ProcCol::Mem, 0));
         s.self_pid = 300;
         update(&mut s, key(KeyCode::Char('K')));
-        assert!(s.confirm_kill.is_none());
+        assert!(s.confirm.is_none());
         assert!(s.notices[0].contains("não encerro"));
     }
 
@@ -414,7 +468,7 @@ mod tests {
         let mut s = state();
         with_procs(&mut s);
         update(&mut s, key(KeyCode::Char('K')));
-        assert!(s.confirm_kill.is_none());
+        assert!(s.confirm.is_none());
     }
 
     fn with_worktrees(s: &mut AppState) {
@@ -586,6 +640,47 @@ mod tests {
         };
         update(&mut s, Action::Sessions(Snapshot::ok(snap)));
         assert_eq!(s.session_list()[s.sess_sel].id, "b");
+    }
+
+    fn with_containers(s: &mut AppState) {
+        use crate::providers::docker::{Compose, Container};
+        let c = |id: &str, name: &str, project: Option<&str>| Container {
+            id: id.into(),
+            name: name.into(),
+            image: "img".into(),
+            compose: project.map(|p| Compose { project: p.into(), ..Default::default() }),
+            ..Default::default()
+        };
+        let snap = DockerSnapshot { containers: vec![c("a1", "v360_db", Some("v360")), c("a2", "v360_redis", Some("v360")), c("b1", "solto", None)] };
+        update(s, Action::Docker(Snapshot::ok(snap)));
+        s.focus = Panel::Docker;
+    }
+
+    #[test]
+    fn docker_stop_one_needs_confirmation() {
+        let mut s = state();
+        with_containers(&mut s);
+        update(&mut s, key(KeyCode::Down));
+        update(&mut s, key(KeyCode::Char('K')));
+        assert!(matches!(&s.confirm, Some(Confirm::Docker { title, .. }) if title == "parar v360_redis"));
+        let out = update(&mut s, key(KeyCode::Char('y')));
+        match out.effect {
+            Some(Effect::Docker { cmds, .. }) => assert_eq!(cmds[0].display(), "docker stop a2"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn docker_down_all_explains_and_cancels() {
+        let mut s = state();
+        with_containers(&mut s);
+        update(&mut s, key(KeyCode::Char('X')));
+        let Some(Confirm::Docker { title, lines, cmds }) = s.confirm.clone() else { panic!() };
+        assert_eq!(title, "derrubar 3 containers");
+        assert_eq!(lines, ["compose v360: down --remove-orphans (2 containers)", "1 container fora de compose: docker stop"]);
+        assert_eq!(cmds.iter().map(|c| c.display()).collect::<Vec<_>>(), ["docker compose -p v360 down --remove-orphans", "docker stop b1"]);
+        let out = update(&mut s, key(KeyCode::Char('n')));
+        assert!(out.effect.is_none() && s.confirm.is_none(), "qualquer tecla que não y cancela");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Desenho. Só lê `AppState`; nunca faz I/O nem muda estado.
 
 mod bigclock;
+mod docker;
 mod hero;
 pub mod layout;
 mod legend;
@@ -28,6 +29,9 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if let Some(r) = a.system {
         system::draw(f, r, s);
     }
+    if let Some(r) = a.docker {
+        docker::draw(f, r, s);
+    }
     if let Some(r) = a.worktrees {
         worktrees::draw(f, r, s);
     }
@@ -45,26 +49,36 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if s.show_legend {
         legend::draw(f, area, s);
     }
-    if let Some(k) = &s.confirm_kill {
-        confirm_kill(f, area, s, k);
+    if let Some(c) = &s.confirm {
+        confirm_dialog(f, area, s, c);
     }
 }
 
-fn confirm_kill(f: &mut Frame, area: Rect, s: &AppState, k: &crate::app::state::KillTarget) {
+fn confirm_dialog(f: &mut Frame, area: Rect, s: &AppState, c: &crate::app::state::Confirm) {
+    use crate::app::state::Confirm;
     let t = s.theme();
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Encerrar ", Style::new().fg(t.fg)),
-            Span::styled(k.name.clone(), Style::new().fg(t.alert).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" (pid {}) com SIGTERM?", k.pid), Style::new().fg(t.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled("y", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-            Span::styled(" confirma · qualquer outra tecla cancela", Style::new().fg(t.muted)),
-        ]),
-    ];
-    let w = (lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4).min(area.width);
-    let h = 4.min(area.height);
+    let (title, mut lines) = match c {
+        Confirm::Kill(k) => (
+            " encerrar processo ".to_string(),
+            vec![Line::from(vec![
+                Span::styled("Encerrar ", Style::new().fg(t.fg)),
+                Span::styled(k.name.clone(), Style::new().fg(t.alert).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" (pid {}) com SIGTERM?", k.pid), Style::new().fg(t.fg)),
+            ])],
+        ),
+        Confirm::Docker { title, lines, .. } => (
+            format!(" {title} "),
+            lines.iter().map(|l| Line::styled(l.clone(), Style::new().fg(t.fg))).collect(),
+        ),
+    };
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("y", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(" confirma · qualquer outra tecla cancela", Style::new().fg(t.muted)),
+    ]));
+    let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(20).max(title.chars().count());
+    let w = (content_w as u16 + 4).min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
     let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
     f.render_widget(Clear, r);
     f.render_widget(
@@ -72,7 +86,7 @@ fn confirm_kill(f: &mut Frame, area: Rect, s: &AppState, k: &crate::app::state::
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().fg(t.alert))
-                .title(" encerrar processo ")
+                .title(Span::styled(title, Style::new().fg(t.alert).add_modifier(Modifier::BOLD)))
                 .style(Style::new().bg(t.bg)),
         ),
         r,
@@ -163,6 +177,7 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
                     ("Tab", " foco  "),
                     ("q", " sair"),
                 ],
+                Panel::Docker => &[("↑↓", " escolher  "), ("K", " parar container  "), ("X", " derrubar tudo  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Sessions => &[("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 _ => &[("Tab", " foco  "), ("t", " tema  "), ("i", " legenda  "), ("?", " ajuda  "), ("q", " sair")],
             };
@@ -194,6 +209,8 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ("/ (Worktrees)", "filtra por nome ou branch; Esc limpa"),
         ("Enter (Claude)", "sai e vai para a pasta da conversa"),
         ("r (Claude)", "retoma uma conversa encerrada numa aba nova"),
+        ("K (Docker)", "para o container selecionado (docker stop)"),
+        ("X (Docker)", "derruba tudo: compose down --remove-orphans por projeto"),
         ("i", "legenda dos símbolos do painel em foco"),
         ("←→ ↑↓ (Sistema)", "escolhe coluna e processo"),
         ("K (Sistema)", "encerra o processo com SIGTERM (pede confirmação)"),

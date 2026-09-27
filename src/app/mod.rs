@@ -47,8 +47,10 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
     providers::usage::spawn(state.config.claude.clone(), usage_tx);
     let (specs_tx, mut specs_rx) = watch::channel(Snapshot::default());
     providers::specs::spawn(specs_tx);
-    let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive, mut usage_alive, mut specs_alive) =
-        (true, true, true, true, true, true);
+    let (docker_tx, mut docker_rx) = watch::channel(Snapshot::default());
+    providers::docker::spawn(docker_tx);
+    let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive, mut usage_alive, mut specs_alive, mut docker_alive) =
+        (true, true, true, true, true, true, true);
     // Resultados de efeitos (ex.: o kill) voltam como ações.
     let (act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
 
@@ -101,6 +103,10 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 Ok(()) => Action::Specs(specs_rx.borrow_and_update().clone()),
                 Err(_) => { specs_alive = false; continue }
             },
+            changed = docker_rx.changed(), if docker_alive => match changed {
+                Ok(()) => Action::Docker(docker_rx.borrow_and_update().clone()),
+                Err(_) => { docker_alive = false; continue }
+            },
             Some(a) = act_rx.recv() => a,
         };
 
@@ -144,6 +150,16 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
                 let msg = match crate::terminal::open(&launcher, &dir, &cmd, &title) {
                     Ok(()) => format!("{cmd} aberto numa aba nova ({})", launcher.name()),
                     Err(e) => format!("não consegui abrir a aba: {e:#}"),
+                };
+                let _ = results.send(Action::Notice(msg));
+            });
+        }
+        Effect::Docker { cmds, label } => {
+            let _ = results.send(Action::Notice(format!("{label}…")));
+            tokio::spawn(async move {
+                let msg = match crate::providers::docker::run(&cmds).await {
+                    Ok(()) => format!("{label}: feito"),
+                    Err(e) => format!("{label} falhou: {e:#}"),
                 };
                 let _ = results.send(Action::Notice(msg));
             });

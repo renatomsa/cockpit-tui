@@ -9,6 +9,7 @@ use crate::{
     providers::{
         Snapshot,
         claude::{Session, SessionsSnapshot, Status},
+        docker::DockerSnapshot,
         geo::Geo,
         git::{Worktree, WorktreesSnapshot},
         ping::PingSnapshot,
@@ -26,13 +27,14 @@ use crate::{
 pub enum Panel {
     Hero,
     Agenda,
+    Docker,
     Worktrees,
     System,
     Sessions,
 }
 
 impl Panel {
-    const ORDER: [Panel; 5] = [Panel::Hero, Panel::Agenda, Panel::Worktrees, Panel::System, Panel::Sessions];
+    const ORDER: [Panel; 6] = [Panel::Hero, Panel::Agenda, Panel::Docker, Panel::Worktrees, Panel::System, Panel::Sessions];
 
     pub fn next(self) -> Self {
         let i = Self::ORDER.iter().position(|p| *p == self).unwrap();
@@ -66,6 +68,15 @@ pub struct KillTarget {
     pub name: String,
 }
 
+/// Ação destrutiva esperando o `y`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirm {
+    /// SIGTERM num processo (painel Sistema).
+    Kill(KillTarget),
+    /// Comandos do Docker: título do diálogo, linhas explicando o que vai acontecer.
+    Docker { title: String, lines: Vec<String>, cmds: Vec<crate::providers::docker::DockerCmd> },
+}
+
 /// Todo o estado da tela. Só `update` escreve aqui; só `ui::draw` lê.
 pub struct AppState {
     pub now: DateTime<Utc>,
@@ -77,12 +88,14 @@ pub struct AppState {
     pub system: Snapshot<SystemSnapshot>,
     pub ping: Snapshot<PingSnapshot>,
     pub proc_sel: ProcSel,
-    pub confirm_kill: Option<KillTarget>,
+    pub confirm: Option<Confirm>,
     pub self_pid: u32,
     pub worktrees: Snapshot<WorktreesSnapshot>,
     pub sessions: Snapshot<SessionsSnapshot>,
     pub usage: Snapshot<UsageSnapshot>,
     pub specs: Snapshot<Specs>,
+    pub docker: Snapshot<DockerSnapshot>,
+    pub docker_sel: usize,
     /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
     /// Índice na lista filtrada de worktrees.
@@ -125,12 +138,14 @@ impl AppState {
             system: Snapshot::default(),
             ping: Snapshot::default(),
             proc_sel: ProcSel::default(),
-            confirm_kill: None,
+            confirm: None,
             self_pid: std::process::id(),
             worktrees: Snapshot::default(),
             sessions: Snapshot::default(),
             usage: Snapshot::default(),
             specs: Snapshot::default(),
+            docker: Snapshot::default(),
+            docker_sel: 0,
             wt_sessions: HashMap::new(),
             wt_sel: 0,
             filter: String::new(),

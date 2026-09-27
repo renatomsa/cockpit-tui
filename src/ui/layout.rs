@@ -17,6 +17,7 @@ pub struct Areas {
     pub mode: Mode,
     pub hero: Rect,
     pub agenda: Option<Rect>,
+    pub docker: Option<Rect>,
     pub worktrees: Option<Rect>,
     pub system: Option<Rect>,
     pub sessions: Option<Rect>,
@@ -27,7 +28,16 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
     let [main, status] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
     if area.height < cfg.compact_max_rows {
-        return Areas { mode: Mode::Compact, hero: main, agenda: None, worktrees: None, system: None, sessions: None, status };
+        return Areas {
+            mode: Mode::Compact,
+            hero: main,
+            agenda: None,
+            docker: None,
+            worktrees: None,
+            system: None,
+            sessions: None,
+            status,
+        };
     }
 
     let hero_h = if main.height >= 45 { 16 } else { 12 };
@@ -36,13 +46,20 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
         let left_pct = cfg.left_percent.clamp(30, 80);
         let [left, right] =
             Layout::horizontal([Constraint::Percentage(left_pct), Constraint::Percentage(100 - left_pct)]).areas(main);
-        let [hero, agenda, worktrees] =
-            Layout::vertical([Constraint::Length(hero_h), Constraint::Length(7), Constraint::Min(5)]).areas(left);
+        // Agenda e Docker com a mesma altura; o resto fica com as worktrees.
+        let [hero, agenda, docker, worktrees] = Layout::vertical([
+            Constraint::Length(hero_h),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Min(5),
+        ])
+        .areas(left);
         let [system, sessions] = Layout::vertical([Constraint::Percentage(55), Constraint::Min(5)]).areas(right);
         return Areas {
             mode: Mode::Wide,
             hero,
             agenda: Some(agenda),
+            docker: Some(docker),
             worktrees: Some(worktrees),
             system: Some(system),
             sessions: Some(sessions),
@@ -50,10 +67,11 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
         };
     }
 
-    let [hero, agenda, system, worktrees, sessions] = Layout::vertical([
+    let [hero, agenda, system, docker, worktrees, sessions] = Layout::vertical([
         Constraint::Length(12),
         Constraint::Length(5),
         Constraint::Length(9),
+        Constraint::Length(5),
         Constraint::Fill(2),
         Constraint::Fill(1),
     ])
@@ -62,6 +80,7 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
         mode: Mode::Stacked,
         hero,
         agenda: Some(agenda),
+        docker: Some(docker),
         worktrees: Some(worktrees),
         system: Some(system),
         sessions: Some(sessions),

@@ -46,6 +46,20 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
                 (st("geo ipinfo.io", muted), "(barra de status) de onde veio a cidade: config, cache ou serviço de IP"),
             ],
         ),
+        Panel::Docker => (
+            "Docker",
+            vec![
+                (st("●", Style::new().fg(t.ok)), "rodando e saudável (healthcheck ok)"),
+                (st("●", Style::new().fg(t.accent)), "rodando, sem healthcheck"),
+                (st("●", Style::new().fg(t.warn)), "healthcheck ainda iniciando"),
+                (st("●", Style::new().fg(t.alert)), "rodando, mas o healthcheck falha"),
+                (st("5432,6379", Style::new().fg(t.highlight)), "portas publicadas no host"),
+                (st("v360", muted), "projeto do docker compose (vazio = container solto)"),
+                (st("Up 4 weeks", muted), "há quanto tempo está de pé, como no docker ps"),
+                (st("K", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "para o container selecionado (docker stop, pede confirmação)"),
+                (st("X", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "derruba tudo: compose down --remove-orphans em cada projeto e stop nos soltos"),
+            ],
+        ),
         Panel::Agenda => (
             "Agenda",
             vec![(st("—", muted), "o Google Calendar chega na F3: próximas reuniões e o alerta vermelho antes delas")],
