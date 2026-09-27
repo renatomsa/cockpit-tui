@@ -3,6 +3,7 @@ mod config;
 mod danger;
 mod locale;
 mod providers;
+mod shell;
 mod theme;
 mod ui;
 
@@ -27,6 +28,9 @@ struct Cli {
     /// Tema desta execução (não fica gravado).
     #[arg(long)]
     theme: Option<String>,
+    /// Arquivo onde gravar a pasta escolhida ao sair (usado pela função do `shell-init`).
+    #[arg(long, hide = true)]
+    cd_file: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -37,6 +41,12 @@ enum Cmd {
     Theme {
         #[command(subcommand)]
         cmd: ThemeCmd,
+    },
+    /// Função de shell que faz o Enter trocar de pasta. Ponha no ~/.zshrc:
+    /// eval "$(cockpit shell-init zsh)"
+    ShellInit {
+        /// zsh, bash ou fish
+        shell: String,
     },
     /// Arquivo de configuração.
     Config {
@@ -73,11 +83,15 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Config { cmd: ConfigCmd::Init }) => config_init(cli.config.unwrap_or_else(|| paths.config_file())),
-        None => run(cli.config, cli.theme, paths),
+        Some(Cmd::ShellInit { shell }) => {
+            print!("{}", shell::init_script(&shell)?);
+            Ok(())
+        }
+        None => run(cli.config, cli.theme, cli.cd_file, paths),
     }
 }
 
-fn run(config_path: Option<PathBuf>, theme_arg: Option<String>, paths: Paths) -> Result<()> {
+fn run(config_path: Option<PathBuf>, theme_arg: Option<String>, cd_file: Option<PathBuf>, paths: Paths) -> Result<()> {
     let _log_guard = init_logging(&paths);
     let loaded = config::load(config_path);
     let mut notices: Vec<String> = loaded.warning.into_iter().collect();
@@ -103,14 +117,21 @@ fn run(config_path: Option<PathBuf>, theme_arg: Option<String>, paths: Paths) ->
     }
 
     tracing::info!(config = %loaded.path.display(), "iniciando");
-    let state = AppState::new(loaded.config, paths, themes, theme_idx, notices);
+    let mut state = AppState::new(loaded.config, paths, themes, theme_idx, notices);
+    state.has_cd_file = cd_file.is_some();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .thread_name("cockpit")
         .build()?;
-    rt.block_on(app::run(state))
+    let exit = rt.block_on(app::run(state))?;
+    // Sem esperar tarefas pendentes (git, du): o usuário quer o prompt de volta já.
+    rt.shutdown_background();
+    if let (Some(file), Some(target)) = (cd_file, exit) {
+        shell::write_cd_file(&file, &target)?;
+    }
+    Ok(())
 }
 
 fn theme_list(paths: &Paths) -> Result<()> {

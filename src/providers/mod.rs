@@ -1,7 +1,9 @@
 //! Providers: tarefas assíncronas que publicam o último snapshot num `watch`.
 //! A UI só lê o valor mais recente; nenhuma fila cresce e nenhum provider bloqueia a tela.
 
+pub mod claude;
 pub mod geo;
+pub mod git;
 pub mod ping;
 pub mod system;
 
@@ -57,6 +59,23 @@ impl Backoff {
     }
 }
 
+/// Evento de arquivo que indica mudança de verdade. O inotify também avisa de leituras
+/// (abrir/fechar sem escrever) e de mudança de metadados; reagir a isso cria um loop,
+/// porque o próprio provider lê os arquivos que observa.
+pub fn is_change(ev: &notify::Event) -> bool {
+    use notify::{
+        EventKind,
+        event::{AccessKind, AccessMode, ModifyKind},
+    };
+    match ev.kind {
+        EventKind::Create(_) | EventKind::Remove(_) => true,
+        EventKind::Modify(ModifyKind::Metadata(_)) => false,
+        EventKind::Modify(_) => true,
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        _ => false,
+    }
+}
+
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
@@ -68,6 +87,21 @@ pub fn http_client() -> reqwest::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_real_changes_count() {
+        use notify::{
+            Event, EventKind,
+            event::{AccessKind, AccessMode, CreateKind, MetadataKind, ModifyKind, RenameMode},
+        };
+        let ev = |k| Event::new(k);
+        assert!(!is_change(&ev(EventKind::Access(AccessKind::Open(AccessMode::Any)))));
+        assert!(!is_change(&ev(EventKind::Access(AccessKind::Close(AccessMode::Read)))));
+        assert!(!is_change(&ev(EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)))));
+        assert!(is_change(&ev(EventKind::Access(AccessKind::Close(AccessMode::Write)))));
+        assert!(is_change(&ev(EventKind::Modify(ModifyKind::Name(RenameMode::To)))));
+        assert!(is_change(&ev(EventKind::Create(CreateKind::File))));
+    }
 
     #[test]
     fn backoff_doubles_until_max_and_resets() {

@@ -10,7 +10,7 @@ A arquitetura e o roadmap estão em [`PLAN.md`](PLAN.md).
 |---|---|---|
 | F0 | Loop, config, temas, layout responsivo, relógio grande, cidade/fuso por IP, relógios extras | ✅ |
 | F1 | Sistema (CPU, memória, swap, disco, rede, ping, PSI) + detector de travamento | ✅ |
-| F2 | Worktrees + sessões do Claude + seletor com `cd` | — |
+| F2 | Worktrees + sessões do Claude + seletor com `cd` | ✅ |
 | F3 | Google Calendar (OAuth2) + alerta vermelho | — |
 | F4 | Wi-Fi do host (WSL), speedtest, clima, mapa | — |
 | F5 | `theme install`, hot-reload, `doctor` | — |
@@ -20,14 +20,24 @@ A arquitetura e o roadmap estão em [`PLAN.md`](PLAN.md).
 ```sh
 cargo install --path .     # instala o binário `cockpit` em ~/.cargo/bin
 cockpit config init        # cria ~/.config/cockpit/config.toml comentado
+echo 'eval "$(cockpit shell-init zsh)"' >> ~/.zshrc   # para o Enter trocar de pasta
+exec zsh
 cockpit
 ```
+
+Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 
 | Tecla | Ação |
 |---|---|
 | `Tab` / `Shift+Tab` | alterna o painel em foco |
 | `t` / `T` | próximo / anterior tema (o último fica lembrado) |
 | `x` | dispensa o aviso da barra de status |
+| `↑↓` `j k` `g G` (Worktrees) | escolhe a worktree |
+| `Enter` (Worktrees) | sai do cockpit e vai para a pasta da worktree |
+| `C` (Worktrees) | idem, e abre `claude --continue` lá |
+| `/` (Worktrees) | filtra por nome ou branch (`Enter` aplica, `Esc` limpa) |
+| `Enter` (Claude) | sai e vai para a pasta da conversa |
+| `r` (Claude) | retoma uma conversa encerrada (`claude --resume`) |
 | `←→` `↑↓` (painel Sistema) | escolhe a coluna (TOP CPU / TOP MEM) e o processo |
 | `K` (painel Sistema) | encerra o processo com SIGTERM, depois de pedir confirmação |
 | `?` | ajuda |
@@ -72,6 +82,16 @@ O painel Sistema mostra CPU e load, memória, swap, pressão (PSI), discos, rede
 No vermelho, a métrica e os maiores ofensores piscam, a borda do painel fica vermelha e o motivo aparece também na barra de status, que continua visível no modo compacto. Para baixar, o valor precisa cair 3 pontos abaixo do limiar, o que evita pisca-pisca. Tudo isso é configurável em `[system.danger]`.
 
 O ping mede o tempo de conexão TCP a `1.1.1.1:443`, porque o WSL vem com ICMP sem root desligado (`net.ipv4.ping_group_range = 1 0`).
+
+## Worktrees e conversas do Claude
+
+O painel Worktrees varre as pastas de `[worktrees].workspaces` (padrão: `~`, dois níveis) atrás de repositórios git e lista as worktrees de cada um: branch, arquivos alterados (`✎`), commits à frente e atrás do upstream (`↑↓`), idade do último commit, tamanho em disco e as conversas do Claude abertas nela (`◆` esperando você, `⠿` trabalhando, `$` rodando shell, `●` parada).
+
+O painel Claude lista as conversas abertas (lidas de `~/.claude/sessions`), com as que esperam você primeiro, e as encerradas nas últimas 24 h, que o `r` retoma. Cada conversa entra na worktree em que o Claude está de fato trabalhando, lida da transcrição, mesmo que ele tenha sido aberto na raiz do repositório.
+
+Um programa não consegue mudar a pasta do shell que o abriu. Por isso o `Enter` depende da função instalada pelo `shell-init` (zsh, bash ou fish): o cockpit grava a pasta escolhida num arquivo temporário e a função faz o `cd` quando ele sai. Sem a função, o `Enter` copia o comando `cd …` para a área de transferência e mostra como ligá-la.
+
+Custo: o `git status` roda a cada 30 s (`refresh_secs`) no modo rápido, sem contar arquivos não rastreados; a contagem completa vai a cada 5 min ou quando algo muda no `.git`. O tamanho em disco é recalculado a cada 10 min em segundo plano.
 
 ## Cidade e fuso
 

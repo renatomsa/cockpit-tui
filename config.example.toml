@@ -50,6 +50,19 @@ disk_warn = 90.0
 disk_crit = 97.0
 hysteresis = 3.0        # quanto precisa cair abaixo do limiar para o alerta baixar
 
+[worktrees]
+# Pastas varridas atrás de repositórios git; as worktrees vêm de `git worktree list`.
+workspaces = ["~"]
+depth = 2                     # até quantos níveis abaixo de cada pasta procurar
+only_with_worktrees = false   # true = esconde repositórios sem worktrees extras
+sizes = true                  # tamanho em disco (calculado em segundo plano a cada 10 min)
+refresh_secs = 30             # git status de cada worktree
+
+[claude]
+# dir = "~/.claude"           # padrão: $CLAUDE_CONFIG_DIR ou ~/.claude
+recent_hours = 24             # conversas encerradas há menos disso aparecem em "recentes"
+recent_max = 5
+
 [layout]
 wide_min_cols = 110     # a partir daqui, duas colunas
 compact_max_rows = 30   # abaixo daqui, só o hero

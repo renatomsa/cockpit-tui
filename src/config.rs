@@ -18,6 +18,8 @@ pub struct Config {
     pub location: LocationConfig,
     pub layout: LayoutConfig,
     pub system: SystemConfig,
+    pub worktrees: WorktreesConfig,
+    pub claude: ClaudeConfig,
 }
 
 impl Default for Config {
@@ -29,6 +31,8 @@ impl Default for Config {
             location: LocationConfig::default(),
             layout: LayoutConfig::default(),
             system: SystemConfig::default(),
+            worktrees: WorktreesConfig::default(),
+            claude: ClaudeConfig::default(),
         }
     }
 }
@@ -170,6 +174,62 @@ impl Default for DangerConfig {
             hysteresis: 3.0,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorktreesConfig {
+    /// Pastas varridas atrás de repositórios git (`~` é expandido).
+    pub workspaces: Vec<String>,
+    /// Profundidade máxima da varredura dentro de cada pasta.
+    pub depth: usize,
+    /// Só lista repositórios que têm worktrees além da principal.
+    pub only_with_worktrees: bool,
+    /// Calcula o tamanho em disco de cada worktree (em segundo plano, a cada 10 min).
+    pub sizes: bool,
+    pub refresh_secs: u64,
+}
+
+impl Default for WorktreesConfig {
+    fn default() -> Self {
+        Self { workspaces: vec!["~".into()], depth: 2, only_with_worktrees: false, sizes: true, refresh_secs: 30 }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClaudeConfig {
+    /// Pasta de dados do Claude Code. Padrão: `$CLAUDE_CONFIG_DIR` ou `~/.claude`.
+    pub dir: Option<String>,
+    /// Conversas encerradas há menos de N horas aparecem como "recentes" (para `r` retomar).
+    pub recent_hours: u64,
+    pub recent_max: usize,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self { dir: None, recent_hours: 24, recent_max: 5 }
+    }
+}
+
+/// Expande `~` e `~/…` para o home.
+pub fn expand_home(p: &str) -> PathBuf {
+    let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+    match (p, home) {
+        ("~", Some(h)) => h,
+        (p, Some(h)) if p.starts_with("~/") => h.join(&p[2..]),
+        (p, _) => PathBuf::from(p),
+    }
+}
+
+/// Caminho para exibição, com o home abreviado para `~`.
+pub fn tilde(p: &std::path::Path) -> String {
+    if let Some(h) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
+        && let Ok(rest) = p.strip_prefix(&h)
+    {
+        return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
+    }
+    p.display().to_string()
 }
 
 impl Config {

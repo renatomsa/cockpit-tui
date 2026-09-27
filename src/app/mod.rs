@@ -25,7 +25,8 @@ use crate::{
     ui,
 };
 
-pub async fn run(mut state: AppState) -> Result<()> {
+/// Roda até o usuário sair. Devolve o destino escolhido (Enter numa worktree/sessão).
+pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>> {
     let (geo_tx, mut geo_rx) = watch::channel(Snapshot::default());
     providers::geo::spawn(state.config.location.clone(), state.paths.cache_dir.join("geo.json"), geo_tx);
     // O provider com `city` fixa publica e termina: pega o valor já disponível.
@@ -38,7 +39,11 @@ pub async fn run(mut state: AppState) -> Result<()> {
     providers::system::spawn(state.config.system.clone(), sys_tx);
     let (ping_tx, mut ping_rx) = watch::channel(Snapshot::default());
     providers::ping::spawn(state.config.system.ping_target.clone(), state.config.system.ping_interval_secs, ping_tx);
-    let (mut sys_alive, mut ping_alive) = (true, true);
+    let (wt_tx, mut wt_rx) = watch::channel(Snapshot::default());
+    providers::git::spawn(state.config.worktrees.clone(), wt_tx);
+    let (sess_tx, mut sess_rx) = watch::channel(Snapshot::default());
+    providers::claude::spawn(state.config.claude.clone(), sess_tx);
+    let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive) = (true, true, true, true);
     // Resultados de efeitos (ex.: o kill) voltam como ações.
     let (act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
 
@@ -75,6 +80,14 @@ pub async fn run(mut state: AppState) -> Result<()> {
                 Ok(()) => Action::Ping(ping_rx.borrow_and_update().clone()),
                 Err(_) => { ping_alive = false; continue }
             },
+            changed = wt_rx.changed(), if wt_alive => match changed {
+                Ok(()) => Action::Worktrees(wt_rx.borrow_and_update().clone()),
+                Err(_) => { wt_alive = false; continue }
+            },
+            changed = sess_rx.changed(), if sess_alive => match changed {
+                Ok(()) => Action::Sessions(sess_rx.borrow_and_update().clone()),
+                Err(_) => { sess_alive = false; continue }
+            },
             Some(a) = act_rx.recv() => a,
         };
 
@@ -89,7 +102,7 @@ pub async fn run(mut state: AppState) -> Result<()> {
     };
 
     ratatui::restore();
-    result
+    result.map(|()| state.exit.take())
 }
 
 /// Próxima virada de segundo do relógio de parede (+2 ms de folga), para os
@@ -112,6 +125,7 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
                 }
             });
         }
+        Effect::Copy(text) => crate::shell::osc52_copy(&text),
         Effect::Kill(t) => {
             tokio::task::spawn_blocking(move || {
                 let res = std::process::Command::new("kill").args(["-TERM", &t.pid.to_string()]).output();

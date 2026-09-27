@@ -9,7 +9,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::panel_block;
+use super::{panel_block, truncate};
 use crate::{
     app::state::{AppState, Panel, ProcCol},
     danger::Level,
@@ -301,16 +301,6 @@ fn bar(pct: f64, width: usize) -> (String, String) {
     }
     let used = full + usize::from(half);
     (filled, "━".repeat(width - used))
-}
-
-fn truncate(s: &str, w: usize) -> String {
-    if s.chars().count() <= w {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(w.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    }
 }
 
 /// Tamanho em base 1024 com sufixo curto: 512K, 11.2G.

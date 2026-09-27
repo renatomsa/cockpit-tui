@@ -1,10 +1,20 @@
+use std::{collections::HashMap, path::PathBuf};
+
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
 use crate::{
     config::{Config, Paths},
     danger::Level,
-    providers::{Snapshot, geo::Geo, ping::PingSnapshot, system::SystemSnapshot},
+    providers::{
+        Snapshot,
+        claude::{Session, SessionsSnapshot, Status},
+        geo::Geo,
+        git::{Worktree, WorktreesSnapshot},
+        ping::PingSnapshot,
+        system::SystemSnapshot,
+    },
+    shell::ExitTarget,
     theme::{Theme, ThemeRegistry},
 };
 
@@ -66,6 +76,20 @@ pub struct AppState {
     pub proc_sel: ProcSel,
     pub confirm_kill: Option<KillTarget>,
     pub self_pid: u32,
+    pub worktrees: Snapshot<WorktreesSnapshot>,
+    pub sessions: Snapshot<SessionsSnapshot>,
+    /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
+    pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
+    /// Índice na lista filtrada de worktrees.
+    pub wt_sel: usize,
+    pub filter: String,
+    pub filter_editing: bool,
+    /// Índice em `live` seguido de `recent`.
+    pub sess_sel: usize,
+    /// Rodando pelo wrapper do shell (`--cd-file`): Enter pode sair e trocar a pasta.
+    pub has_cd_file: bool,
+    /// Destino escolhido; o `main` grava no arquivo do wrapper ao sair.
+    pub exit: Option<ExitTarget>,
     /// Fuso da cidade atual (geolocalização → config → sistema → UTC).
     pub tz: Tz,
     pub system_tz: Tz,
@@ -94,10 +118,19 @@ impl AppState {
             proc_sel: ProcSel::default(),
             confirm_kill: None,
             self_pid: std::process::id(),
+            worktrees: Snapshot::default(),
+            sessions: Snapshot::default(),
+            wt_sessions: HashMap::new(),
+            wt_sel: 0,
+            filter: String::new(),
+            filter_editing: false,
+            sess_sel: 0,
+            has_cd_file: false,
+            exit: None,
             tz: system_tz,
             system_tz,
             extra_clocks,
-            focus: Panel::Hero,
+            focus: Panel::Worktrees,
             show_help: false,
             notices,
             quit: false,
@@ -127,6 +160,65 @@ impl AppState {
             (Some(d), ProcCol::Mem) => &d.top_mem,
             (None, _) => &[],
         }
+    }
+
+    /// Worktrees visíveis (com o filtro aplicado), como (repo, worktree).
+    pub fn visible_worktrees(&self) -> Vec<(usize, usize)> {
+        let Some(d) = &self.worktrees.data else { return Vec::new() };
+        let needle = self.filter.to_lowercase();
+        let mut out = Vec::new();
+        for (ri, r) in d.repos.iter().enumerate() {
+            for (wi, w) in r.worktrees.iter().enumerate() {
+                let hay = format!("{}/{} {}", r.name, w.name, w.branch.as_deref().unwrap_or("")).to_lowercase();
+                if fuzzy_match(&needle, &hay) {
+                    out.push((ri, wi));
+                }
+            }
+        }
+        out
+    }
+
+    pub fn selected_worktree(&self) -> Option<&Worktree> {
+        let (ri, wi) = *self.visible_worktrees().get(self.wt_sel)?;
+        self.worktrees.data.as_ref()?.repos.get(ri)?.worktrees.get(wi)
+    }
+
+    /// Vivas e depois recentes, na ordem em que aparecem no painel.
+    pub fn session_list(&self) -> Vec<&Session> {
+        self.sessions.data.as_ref().map(|d| d.live.iter().chain(&d.recent).collect()).unwrap_or_default()
+    }
+
+    pub fn waiting_count(&self) -> usize {
+        self.sessions.data.as_ref().map_or(0, |d| d.count(Status::Waiting))
+    }
+
+    /// Associa cada sessão viva à worktree mais específica que contém o `cwd` dela
+    /// (a principal contém as de `.claude/worktrees`, então ganha o prefixo mais longo).
+    pub fn recompute_wt_sessions(&mut self) {
+        self.wt_sessions.clear();
+        let (Some(w), Some(sess)) = (&self.worktrees.data, &self.sessions.data) else { return };
+        let paths: Vec<&PathBuf> = w.repos.iter().flat_map(|r| r.worktrees.iter().map(|w| &w.path)).collect();
+        for (i, s) in sess.live.iter().enumerate() {
+            if let Some(best) = paths.iter().filter(|p| s.cwd.starts_with(p)).max_by_key(|p| p.as_os_str().len()) {
+                self.wt_sessions.entry((*best).clone()).or_default().push(i);
+            }
+        }
+    }
+
+    /// Nome curto de onde a sessão está: a worktree, se estiver numa, ou a pasta.
+    pub fn session_place(&self, s: &Session) -> String {
+        if let Some(w) = &self.worktrees.data {
+            let best = w
+                .repos
+                .iter()
+                .flat_map(|r| r.worktrees.iter().map(move |w| (r, w)))
+                .filter(|(_, w)| s.cwd.starts_with(&w.path))
+                .max_by_key(|(_, w)| w.path.as_os_str().len());
+            if let Some((r, w)) = best {
+                return if w.is_main { r.name.clone() } else { format!("{}/{}", r.name, w.name) };
+            }
+        }
+        s.cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| crate::config::tilde(&s.cwd))
     }
 
     pub fn recompute_tz(&mut self) {
@@ -165,5 +257,25 @@ impl AppState {
             None if self.geo.is_loading() => "localizando…".into(),
             None => format!("{} · fuso do sistema", self.city_label()),
         }
+    }
+}
+
+/// Todas as letras do filtro aparecem na ordem, não necessariamente juntas ("cfs" casa
+/// com "processable-file-cfs"). Filtro vazio casa com tudo.
+pub fn fuzzy_match(needle: &str, hay: &str) -> bool {
+    let mut it = hay.chars();
+    needle.chars().filter(|c| !c.is_whitespace()).all(|n| it.any(|h| h == n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fuzzy() {
+        assert!(fuzzy_match("", "qualquer"));
+        assert!(fuzzy_match("cfs", "v360/processable-file-cfs feat/x"));
+        assert!(fuzzy_match("v36 cfs", "v360/processable-file-cfs"));
+        assert!(!fuzzy_match("sfc", "cfs"));
     }
 }

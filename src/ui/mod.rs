@@ -3,7 +3,9 @@
 mod bigclock;
 mod hero;
 pub mod layout;
+mod sessions;
 mod system;
+mod worktrees;
 
 use ratatui::{
     Frame,
@@ -25,16 +27,14 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if let Some(r) = a.system {
         system::draw(f, r, s);
     }
-
-    let placeholders = [
-        (a.agenda, Panel::Agenda, "Agenda", "Próximas reuniões do Google Calendar · F3 (`cockpit auth google`)"),
-        (a.worktrees, Panel::Worktrees, "Worktrees", "Worktrees do Claude por projeto, com seletor que dá `cd` · F2"),
-        (a.sessions, Panel::Sessions, "Claude", "Conversas do Claude em aberto (esperando / trabalhando) · F2"),
-    ];
-    for (rect, panel, title, text) in placeholders {
-        if let Some(r) = rect {
-            placeholder(f, r, s, panel, title, text);
-        }
+    if let Some(r) = a.worktrees {
+        worktrees::draw(f, r, s);
+    }
+    if let Some(r) = a.sessions {
+        sessions::draw(f, r, s);
+    }
+    if let Some(r) = a.agenda {
+        placeholder(f, r, s, Panel::Agenda, "Agenda", "Próximas reuniões do Google Calendar · F3 (`cockpit auth google`)");
     }
 
     statusbar(f, a.status, s);
@@ -105,38 +105,6 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
     let key = |k: &'static str| Span::styled(k, Style::new().fg(t.accent).add_modifier(Modifier::BOLD));
     let lbl = |l: &'static str| Span::styled(l, Style::new().fg(t.muted));
 
-    let left: Line = match s.notices.first() {
-        Some(n) => Line::from(vec![
-            Span::styled(format!(" ⚠ {n} "), Style::new().fg(t.warn)),
-            key("x"),
-            lbl(" dispensar"),
-        ]),
-        None if s.focus == Panel::System => Line::from(vec![
-            Span::raw(" "),
-            key("←→"),
-            lbl(" coluna  "),
-            key("↑↓"),
-            lbl(" processo  "),
-            key("K"),
-            lbl(" encerrar  "),
-            key("Tab"),
-            lbl(" foco  "),
-            key("q"),
-            lbl(" sair"),
-        ]),
-        None => Line::from(vec![
-            Span::raw(" "),
-            key("Tab"),
-            lbl(" foco  "),
-            key("t"),
-            lbl(" tema  "),
-            key("?"),
-            lbl(" ajuda  "),
-            key("q"),
-            lbl(" sair"),
-        ]),
-    };
-
     let geo = match (&s.geo.data, &s.geo.error) {
         (None, Some(_)) => Span::styled("geo offline", Style::new().fg(t.warn)),
         (Some(g), Some(_)) => {
@@ -147,6 +115,11 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
         (None, None) => lbl_owned("geo …".into(), t.muted),
     };
     let mut right = Vec::new();
+    let waiting = s.waiting_count();
+    if waiting > 0 {
+        right.push(Span::styled(format!("◆ {waiting} esperando você"), Style::new().fg(t.warn).add_modifier(Modifier::BOLD)));
+        right.push(lbl("  ·  "));
+    }
     // O alerta de sistema aparece aqui também: no modo compacto o painel some.
     if let Some(d) = &s.system.data
         && let Some((lvl, reason)) = d.danger.reasons.first()
@@ -158,6 +131,40 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
     let right = Line::from(right);
 
     let rw = right.width() as u16;
+    let left: Line = match s.notices.first() {
+        Some(n) => Line::from(vec![
+            // cabe entre a margem e o lado direito, deixando lugar para "x dispensar"
+            Span::styled(
+                format!(" ⚠ {} ", truncate(n, (area.width as usize).saturating_sub(rw as usize + 18))),
+                Style::new().fg(t.warn),
+            ),
+            key("x"),
+            lbl(" dispensar"),
+        ]),
+        None => {
+            let hints: &[(&'static str, &'static str)] = match s.focus {
+                _ if s.filter_editing => &[("digite", " para filtrar  "), ("↑↓", " escolher  "), ("Enter", " aplicar  "), ("Esc", " limpar")],
+                Panel::System => &[("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("Tab", " foco  "), ("q", " sair")],
+                Panel::Worktrees => &[
+                    ("↑↓", " escolher  "),
+                    ("Enter", " ir para a pasta  "),
+                    ("C", " ir + claude --continue  "),
+                    ("/", " filtrar  "),
+                    ("Tab", " foco  "),
+                    ("q", " sair"),
+                ],
+                Panel::Sessions => &[("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar encerrada  "), ("Tab", " foco  "), ("q", " sair")],
+                _ => &[("Tab", " foco  "), ("t", " tema  "), ("?", " ajuda  "), ("q", " sair")],
+            };
+            let mut spans = vec![Span::raw(" ")];
+            for (k, l) in hints {
+                spans.push(key(k));
+                spans.push(lbl(l));
+            }
+            Line::from(spans)
+        }
+    };
+
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw)]).areas(area);
     f.render_widget(Paragraph::new(left), l);
     f.render_widget(Paragraph::new(right).alignment(Alignment::Right), r);
@@ -172,6 +179,11 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
     let rows = [
         ("Tab / Shift+Tab", "alterna o painel em foco"),
         ("t / T", "próximo / anterior tema (fica lembrado)"),
+        ("Enter (Worktrees)", "sai e vai para a worktree (com o shell-init)"),
+        ("C (Worktrees)", "idem, e abre `claude --continue` lá"),
+        ("/ (Worktrees)", "filtra por nome ou branch; Esc limpa"),
+        ("Enter (Claude)", "sai e vai para a pasta da conversa"),
+        ("r (Claude)", "retoma uma conversa encerrada"),
         ("←→ ↑↓ (Sistema)", "escolhe coluna e processo"),
         ("K (Sistema)", "encerra o processo com SIGTERM (pede confirmação)"),
         ("x", "dispensa o aviso da barra"),
@@ -201,6 +213,35 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ),
         r,
     );
+}
+
+/// Tempo relativo curto: 45s, 12m, 3h, 5d, 2mo, 1a.
+pub(crate) fn ago(secs: i64) -> String {
+    let s = secs.max(0);
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        3600..86_400 => format!("{}h", s / 3600),
+        86_400..2_592_000 => format!("{}d", s / 86_400),
+        2_592_000..31_536_000 => format!("{}mo", s / 2_592_000),
+        _ => format!("{}a", s / 31_536_000),
+    }
+}
+
+/// Completa com espaços até `w` colunas (contando caracteres, não bytes).
+pub(crate) fn pad(s: &str, w: usize) -> String {
+    let n = s.chars().count();
+    if n >= w { s.to_string() } else { format!("{s}{}", " ".repeat(w - n)) }
+}
+
+pub(crate) fn truncate(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(w.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
 }
 
 #[cfg(test)]
