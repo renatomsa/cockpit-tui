@@ -39,6 +39,8 @@ pub enum Effect {
     Kill(KillTarget),
     /// Copia para a área de transferência pelo terminal (OSC 52).
     Copy(String),
+    /// Abre uma aba nova de terminal rodando `cmd` em `dir`; o cockpit continua aberto.
+    OpenTab { launcher: crate::terminal::Launcher, dir: std::path::PathBuf, cmd: String, title: String },
 }
 
 #[derive(Debug, Default)]
@@ -114,8 +116,9 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
         let effect = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')).then_some(Effect::Kill(target));
         return Outcome { redraw: true, effect };
     }
-    if s.show_help {
+    if s.show_help || s.show_legend {
         s.show_help = false;
+        s.show_legend = false;
         return Outcome::redraw();
     }
     if s.filter_editing {
@@ -137,6 +140,7 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
     match k.code {
         KeyCode::Char('q') => s.quit = true,
         KeyCode::Char('?') => s.show_help = true,
+        KeyCode::Char('i') => s.show_legend = true,
         KeyCode::Tab => s.focus = s.focus.next(),
         KeyCode::BackTab => s.focus = s.focus.prev(),
         KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -210,8 +214,11 @@ fn on_worktrees_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
                 s.notices.insert(0, format!("{} não existe mais em disco (git worktree prune)", w.name));
                 return Some(Outcome::redraw());
             }
-            let then = (code == KeyCode::Char('C')).then_some(Then::Continue);
-            Some(go_to(s, ExitTarget { dir: w.path.clone(), then }))
+            let (dir, name) = (w.path.clone(), w.name.clone());
+            if code == KeyCode::Enter {
+                return Some(go_to(s, ExitTarget { dir, then: None }));
+            }
+            Some(open_claude(s, dir, "claude --continue".into(), format!("claude · {name}"), Then::Continue))
         }
         _ => None,
     }
@@ -226,13 +233,24 @@ fn on_sessions_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
     match code {
         KeyCode::Enter => Some(go_to(s, ExitTarget { dir: sess.cwd, then: None })),
         KeyCode::Char('r') if sess.status == Status::Ended => {
-            Some(go_to(s, ExitTarget { dir: sess.cwd, then: Some(Then::Resume(sess.id)) }))
+            let cmd = format!("claude --resume {}", sess.id);
+            let title = format!("claude · {}", crate::ui::truncate(&sess.title, 30));
+            Some(open_claude(s, sess.cwd, cmd, title, Then::Resume(sess.id)))
         }
         KeyCode::Char('r') => {
             s.notices.insert(0, format!("\"{}\" já está aberta (pid {}); Enter vai para a pasta dela", sess.title, sess.pid));
             Some(Outcome::redraw())
         }
         _ => None,
+    }
+}
+
+/// Abre o Claude numa aba nova, sem fechar o cockpit. Sem como abrir aba (terminal não
+/// reconhecido), cai no comportamento de sair e trocar de pasta.
+fn open_claude(s: &mut AppState, dir: std::path::PathBuf, cmd: String, title: String, then: Then) -> Outcome {
+    match s.launcher.clone() {
+        Some(launcher) => Outcome { redraw: true, effect: Some(Effect::OpenTab { launcher, dir, cmd, title }) },
+        None => go_to(s, ExitTarget { dir, then: Some(then) }),
     }
 }
 
@@ -442,6 +460,35 @@ mod tests {
     }
 
     #[test]
+    fn continue_opens_a_new_tab_and_keeps_running() {
+        let mut s = state();
+        s.has_cd_file = true;
+        s.launcher = Some(crate::terminal::Launcher::Tmux);
+        with_worktrees(&mut s);
+        update(&mut s, key(KeyCode::Down));
+        let out = update(&mut s, key(KeyCode::Char('C')));
+        assert!(!s.quit, "o cockpit continua aberto");
+        assert_eq!(
+            out.effect,
+            Some(Effect::OpenTab {
+                launcher: crate::terminal::Launcher::Tmux,
+                dir: "/h/v360/.claude/worktrees/processable-file-cfs".into(),
+                cmd: "claude --continue".into(),
+                title: "claude · processable-file-cfs".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn i_opens_the_legend_and_any_key_closes() {
+        let mut s = state();
+        update(&mut s, key(KeyCode::Char('i')));
+        assert!(s.show_legend);
+        update(&mut s, key(KeyCode::Char('q')));
+        assert!(!s.show_legend && !s.quit);
+    }
+
+    #[test]
     fn continue_key_and_no_wrapper_copies() {
         let mut s = state();
         with_worktrees(&mut s);
@@ -494,11 +541,22 @@ mod tests {
         update(&mut s, key(KeyCode::Char('r')));
         assert!(!s.quit && s.notices[0].contains("já está aberta"));
         update(&mut s, key(KeyCode::Char('G')));
+        // sem lançador de aba: sai e retoma pelo wrapper
         update(&mut s, key(KeyCode::Char('r')));
         assert_eq!(
             s.exit,
             Some(ExitTarget { dir: "/h/v360/.claude/worktrees/build-s4".into(), then: Some(Then::Resume("c".into())) })
         );
+        // com lançador: aba nova, cockpit segue aberto
+        let mut s2 = state();
+        s2.launcher = Some(crate::terminal::Launcher::Tmux);
+        with_worktrees(&mut s2);
+        with_sessions(&mut s2);
+        s2.focus = Panel::Sessions;
+        update(&mut s2, key(KeyCode::Char('G')));
+        let out = update(&mut s2, key(KeyCode::Char('r')));
+        assert!(!s2.quit);
+        assert!(matches!(out.effect, Some(Effect::OpenTab { ref cmd, .. }) if cmd == "claude --resume c"));
     }
 
     #[test]

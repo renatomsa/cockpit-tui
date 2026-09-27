@@ -20,6 +20,7 @@ pub struct Config {
     pub system: SystemConfig,
     pub worktrees: WorktreesConfig,
     pub claude: ClaudeConfig,
+    pub terminal: TerminalConfig,
 }
 
 impl Default for Config {
@@ -33,6 +34,7 @@ impl Default for Config {
             system: SystemConfig::default(),
             worktrees: WorktreesConfig::default(),
             claude: ClaudeConfig::default(),
+            terminal: TerminalConfig::default(),
         }
     }
 }
@@ -210,6 +212,15 @@ impl Default for ClaudeConfig {
     fn default() -> Self {
         Self { dir: None, recent_hours: 24, recent_max: 5 }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalConfig {
+    /// Como abrir uma aba nova (o `C` das worktrees e o `r` das conversas). Vazio =
+    /// automático: tmux, Windows Terminal (WSL), kitty, WezTerm ou gnome-terminal.
+    /// Rodado com `sh -c`; `{dir}`, `{cmd}` e `{title}` são substituídos já com aspas.
+    pub new_tab: String,
 }
 
 /// Expande `~` e `~/…` para o home.

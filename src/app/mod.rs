@@ -126,6 +126,15 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
             });
         }
         Effect::Copy(text) => crate::shell::osc52_copy(&text),
+        Effect::OpenTab { launcher, dir, cmd, title } => {
+            tokio::task::spawn_blocking(move || {
+                let msg = match crate::terminal::open(&launcher, &dir, &cmd, &title) {
+                    Ok(()) => format!("{cmd} aberto numa aba nova ({})", launcher.name()),
+                    Err(e) => format!("não consegui abrir a aba: {e:#}"),
+                };
+                let _ = results.send(Action::Notice(msg));
+            });
+        }
         Effect::Kill(t) => {
             tokio::task::spawn_blocking(move || {
                 let res = std::process::Command::new("kill").args(["-TERM", &t.pid.to_string()]).output();

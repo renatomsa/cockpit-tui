@@ -15,6 +15,7 @@ use crate::{
         system::SystemSnapshot,
     },
     shell::ExitTarget,
+    terminal::Launcher,
     theme::{Theme, ThemeRegistry},
 };
 
@@ -90,6 +91,10 @@ pub struct AppState {
     pub has_cd_file: bool,
     /// Destino escolhido; o `main` grava no arquivo do wrapper ao sair.
     pub exit: Option<ExitTarget>,
+    /// Como abrir uma aba nova de terminal (detectado na partida).
+    pub launcher: Option<Launcher>,
+    /// Legenda dos símbolos do painel em foco (tecla `i`).
+    pub show_legend: bool,
     /// Fuso da cidade atual (geolocalização → config → sistema → UTC).
     pub tz: Tz,
     pub system_tz: Tz,
@@ -127,6 +132,8 @@ impl AppState {
             sess_sel: 0,
             has_cd_file: false,
             exit: None,
+            launcher: None,
+            show_legend: false,
             tz: system_tz,
             system_tz,
             extra_clocks,

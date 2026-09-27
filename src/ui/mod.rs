@@ -3,6 +3,7 @@
 mod bigclock;
 mod hero;
 pub mod layout;
+mod legend;
 mod sessions;
 mod system;
 mod worktrees;
@@ -40,6 +41,9 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     statusbar(f, a.status, s);
     if s.show_help {
         help(f, area, s);
+    }
+    if s.show_legend {
+        legend::draw(f, area, s);
     }
     if let Some(k) = &s.confirm_kill {
         confirm_kill(f, area, s, k);
@@ -134,27 +138,33 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
     let left: Line = match s.notices.first() {
         Some(n) => Line::from(vec![
             // cabe entre a margem e o lado direito, deixando lugar para "x dispensar"
-            Span::styled(
-                format!(" ⚠ {} ", truncate(n, (area.width as usize).saturating_sub(rw as usize + 18))),
-                Style::new().fg(t.warn),
-            ),
+            {
+                // Aviso de problema em amarelo com ⚠; confirmação de ação em tom neutro.
+                let bad = ["não ", "erro", "falhou", "inválid", "ignorad"].iter().any(|w| n.to_lowercase().contains(w));
+                let (icon, color) = if bad { ("⚠", t.warn) } else { ("›", t.accent) };
+                Span::styled(
+                    format!(" {icon} {} ", truncate(n, (area.width as usize).saturating_sub(rw as usize + 18))),
+                    Style::new().fg(color),
+                )
+            },
             key("x"),
             lbl(" dispensar"),
         ]),
         None => {
             let hints: &[(&'static str, &'static str)] = match s.focus {
                 _ if s.filter_editing => &[("digite", " para filtrar  "), ("↑↓", " escolher  "), ("Enter", " aplicar  "), ("Esc", " limpar")],
-                Panel::System => &[("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("Tab", " foco  "), ("q", " sair")],
+                Panel::System => &[("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Worktrees => &[
                     ("↑↓", " escolher  "),
                     ("Enter", " ir para a pasta  "),
-                    ("C", " ir + claude --continue  "),
+                    ("C", " claude numa aba nova  "),
                     ("/", " filtrar  "),
+                    ("i", " legenda  "),
                     ("Tab", " foco  "),
                     ("q", " sair"),
                 ],
-                Panel::Sessions => &[("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar encerrada  "), ("Tab", " foco  "), ("q", " sair")],
-                _ => &[("Tab", " foco  "), ("t", " tema  "), ("?", " ajuda  "), ("q", " sair")],
+                Panel::Sessions => &[("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
+                _ => &[("Tab", " foco  "), ("t", " tema  "), ("i", " legenda  "), ("?", " ajuda  "), ("q", " sair")],
             };
             let mut spans = vec![Span::raw(" ")];
             for (k, l) in hints {
@@ -180,10 +190,11 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ("Tab / Shift+Tab", "alterna o painel em foco"),
         ("t / T", "próximo / anterior tema (fica lembrado)"),
         ("Enter (Worktrees)", "sai e vai para a worktree (com o shell-init)"),
-        ("C (Worktrees)", "idem, e abre `claude --continue` lá"),
+        ("C (Worktrees)", "abre `claude --continue` numa aba nova, na worktree"),
         ("/ (Worktrees)", "filtra por nome ou branch; Esc limpa"),
         ("Enter (Claude)", "sai e vai para a pasta da conversa"),
-        ("r (Claude)", "retoma uma conversa encerrada"),
+        ("r (Claude)", "retoma uma conversa encerrada numa aba nova"),
+        ("i", "legenda dos símbolos do painel em foco"),
         ("←→ ↑↓ (Sistema)", "escolhe coluna e processo"),
         ("K (Sistema)", "encerra o processo com SIGTERM (pede confirmação)"),
         ("x", "dispensa o aviso da barra"),

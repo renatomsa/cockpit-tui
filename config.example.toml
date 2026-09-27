@@ -63,6 +63,13 @@ refresh_secs = 30             # git status de cada worktree
 recent_hours = 24             # conversas encerradas há menos disso aparecem em "recentes"
 recent_max = 5
 
+[terminal]
+# Como abrir a aba nova do `C` (worktrees) e do `r` (conversas). Vazio = automático:
+# tmux → Windows Terminal (WSL) → kitty → WezTerm → gnome-terminal.
+# {dir}, {cmd} e {title} são substituídos já com aspas; roda com `sh -c`.
+# new_tab = "alacritty --working-directory {dir} -e zsh -lic {cmd}"
+new_tab = ""
+
 [layout]
 wide_min_cols = 110     # a partir daqui, duas colunas
 compact_max_rows = 30   # abaixo daqui, só o hero

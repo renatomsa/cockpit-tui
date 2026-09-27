@@ -4,6 +4,7 @@ mod danger;
 mod locale;
 mod providers;
 mod shell;
+mod terminal;
 mod theme;
 mod ui;
 
@@ -119,6 +120,8 @@ fn run(config_path: Option<PathBuf>, theme_arg: Option<String>, cd_file: Option<
     tracing::info!(config = %loaded.path.display(), "iniciando");
     let mut state = AppState::new(loaded.config, paths, themes, theme_idx, notices);
     state.has_cd_file = cd_file.is_some();
+    state.launcher = terminal::detect(&state.config.terminal.new_tab);
+    tracing::info!(launcher = ?state.launcher, "aba nova");
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

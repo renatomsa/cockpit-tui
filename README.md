@@ -34,10 +34,11 @@ Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 | `x` | dispensa o aviso da barra de status |
 | `↑↓` `j k` `g G` (Worktrees) | escolhe a worktree |
 | `Enter` (Worktrees) | sai do cockpit e vai para a pasta da worktree |
-| `C` (Worktrees) | idem, e abre `claude --continue` lá |
+| `C` (Worktrees) | abre `claude --continue` numa aba nova, já na worktree; o cockpit continua aberto |
 | `/` (Worktrees) | filtra por nome ou branch (`Enter` aplica, `Esc` limpa) |
 | `Enter` (Claude) | sai e vai para a pasta da conversa |
-| `r` (Claude) | retoma uma conversa encerrada (`claude --resume`) |
+| `r` (Claude) | retoma uma conversa encerrada (`claude --resume`) numa aba nova |
+| `i` | legenda dos símbolos do painel em foco |
 | `←→` `↑↓` (painel Sistema) | escolhe a coluna (TOP CPU / TOP MEM) e o processo |
 | `K` (painel Sistema) | encerra o processo com SIGTERM, depois de pedir confirmação |
 | `?` | ajuda |
@@ -90,6 +91,8 @@ O painel Worktrees varre as pastas de `[worktrees].workspaces` (padrão: `~`, do
 O painel Claude lista as conversas abertas (lidas de `~/.claude/sessions`), com as que esperam você primeiro, e as encerradas nas últimas 24 h, que o `r` retoma. Cada conversa entra na worktree em que o Claude está de fato trabalhando, lida da transcrição, mesmo que ele tenha sido aberto na raiz do repositório.
 
 Um programa não consegue mudar a pasta do shell que o abriu. Por isso o `Enter` depende da função instalada pelo `shell-init` (zsh, bash ou fish): o cockpit grava a pasta escolhida num arquivo temporário e a função faz o `cd` quando ele sai. Sem a função, o `Enter` copia o comando `cd …` para a área de transferência e mostra como ligá-la.
+
+O `C` e o `r` abrem uma aba nova em vez de fechar o cockpit. O terminal é detectado: tmux (janela nova), Windows Terminal pelo WSL (aba nova na mesma janela, via `wt.exe` e `wsl.exe --cd`), kitty, WezTerm ou gnome-terminal. O comando roda no seu shell de login interativo, para ter o mesmo PATH de sempre, e a aba continua aberta quando o Claude termina. Para outro terminal, defina `[terminal].new_tab` no config. Se nenhum for reconhecido, os dois voltam ao comportamento antigo: saem e rodam o Claude no shell atual pelo wrapper.
 
 Custo: o `git status` roda a cada 30 s (`refresh_secs`) no modo rápido, sem contar arquivos não rastreados; a contagem completa vai a cada 5 min ou quando algo muda no `.git`. O tamanho em disco é recalculado a cada 10 min em segundo plano.
 
