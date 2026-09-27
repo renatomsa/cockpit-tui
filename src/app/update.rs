@@ -7,6 +7,7 @@ use super::state::{AppState, Confirm, KillTarget, Panel, ProcCol};
 use crate::{
     providers::{
         Snapshot,
+        calendar::CalendarSnapshot,
         claude::{SessionsSnapshot, Status},
         docker::{self, DockerCmd, DockerSnapshot},
         geo::Geo,
@@ -33,6 +34,7 @@ pub enum Action {
     Usage(Snapshot<UsageSnapshot>),
     Specs(Snapshot<Specs>),
     Docker(Snapshot<DockerSnapshot>),
+    Calendar(Snapshot<CalendarSnapshot>),
     /// Mensagem para a barra de status (ex.: resultado de um efeito).
     Notice(String),
 }
@@ -43,6 +45,8 @@ pub enum Effect {
     PersistTheme(String),
     /// SIGTERM, já confirmado pelo usuário.
     Kill(KillTarget),
+    /// Abre uma URL no navegador (link da reunião).
+    OpenUrl(String),
     /// Comandos do Docker já confirmados; `label` resume a ação na barra de status.
     Docker { cmds: Vec<DockerCmd>, label: String },
     /// Copia para a área de transferência pelo terminal (OSC 52).
@@ -103,6 +107,14 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
                 .min(list.len().saturating_sub(1));
             Outcome::redraw()
         }
+        Action::Calendar(snap) => {
+            s.calendar = snap;
+            // esquece as reuniões que já saíram da agenda
+            let keys: std::collections::HashSet<String> = s.events().iter().map(|e| e.key()).collect();
+            s.dismissed.retain(|k| keys.contains(k));
+            s.agenda_sel = s.agenda_sel.min(s.events().len().saturating_sub(1));
+            Outcome::redraw()
+        }
         Action::Docker(snap) => {
             s.docker = snap;
             let n = s.docker.data.as_ref().map_or(0, |d| d.containers.len());
@@ -142,6 +154,32 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
         });
         return Outcome { redraw: true, effect };
     }
+    // Tela vermelha de reunião: qualquer tecla para o alerta; z adia; o abre a chamada.
+    if s.alert().level == crate::alert::Level::Imminent {
+        let ev = s.alert().event.cloned();
+        let Some(ev) = ev else { return Outcome::default() };
+        return match k.code {
+            KeyCode::Char('z') => {
+                s.snoozed_until = Some(s.now + chrono::Duration::minutes(s.config.calendar.snooze_minutes));
+                s.notices.insert(0, format!("alerta adiado {} min", s.config.calendar.snooze_minutes));
+                Outcome::redraw()
+            }
+            KeyCode::Char('o') => {
+                s.dismissed.insert(ev.key());
+                match ev.link() {
+                    Some(url) => Outcome { redraw: true, effect: Some(Effect::OpenUrl(url.to_string())) },
+                    None => {
+                        s.notices.insert(0, "a reunião não tem link".into());
+                        Outcome::redraw()
+                    }
+                }
+            }
+            _ => {
+                s.dismissed.insert(ev.key());
+                Outcome::redraw()
+            }
+        };
+    }
     if s.show_help || s.show_legend {
         s.show_help = false;
         s.show_legend = false;
@@ -152,6 +190,11 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
     }
     if s.focus == Panel::System && on_system_key(s, k.code) {
         return Outcome::redraw();
+    }
+    if s.focus == Panel::Agenda
+        && let Some(out) = on_agenda_key(s, k.code)
+    {
+        return out;
     }
     if s.focus == Panel::Docker
         && let Some(out) = on_docker_key(s, k.code)
@@ -222,6 +265,31 @@ fn step(sel: &mut usize, n: usize, code: KeyCode) -> bool {
         _ => return false,
     };
     true
+}
+
+fn on_agenda_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
+    let n = s.events().len();
+    if step(&mut s.agenda_sel, n, code) {
+        return Some(Outcome::redraw());
+    }
+    let ev = s.events().get(s.agenda_sel)?.clone();
+    match code {
+        KeyCode::Char('o') | KeyCode::Enter => match ev.link() {
+            Some(url) => Some(Outcome { redraw: true, effect: Some(Effect::OpenUrl(url.to_string())) }),
+            None => {
+                s.notices.insert(0, format!("\"{}\" não tem link", ev.title));
+                Some(Outcome::redraw())
+            }
+        },
+        KeyCode::Char('y') => match ev.link() {
+            Some(url) => {
+                s.notices.insert(0, format!("link copiado: {url}"));
+                Some(Outcome { redraw: true, effect: Some(Effect::Copy(url.to_string())) })
+            }
+            None => None,
+        },
+        _ => None,
+    }
 }
 
 fn on_docker_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
@@ -681,6 +749,58 @@ mod tests {
         assert_eq!(cmds.iter().map(|c| c.display()).collect::<Vec<_>>(), ["docker compose -p v360 down --remove-orphans", "docker stop b1"]);
         let out = update(&mut s, key(KeyCode::Char('n')));
         assert!(out.effect.is_none() && s.confirm.is_none(), "qualquer tecla que não y cancela");
+    }
+
+    fn with_meeting_in(s: &mut AppState, mins: i64) {
+        use crate::providers::calendar::Event;
+        let start = s.now + chrono::Duration::minutes(mins);
+        let ev = Event {
+            id: "daily".into(),
+            title: "Daily".into(),
+            start,
+            end: start + chrono::Duration::minutes(15),
+            meet: Some("https://meet.google.com/abc".into()),
+            ..Default::default()
+        };
+        update(s, Action::Calendar(Snapshot::ok(CalendarSnapshot { events: vec![ev], calendars: vec![] })));
+    }
+
+    #[test]
+    fn any_key_stops_the_red_alert() {
+        let mut s = state();
+        with_meeting_in(&mut s, 3);
+        assert_eq!(s.alert().level, crate::alert::Level::Imminent);
+        assert!(s.animating(), "pisca a 2 Hz");
+        update(&mut s, key(KeyCode::Char('q')));
+        assert!(!s.quit, "a tecla só para o alerta");
+        assert_eq!(s.alert().level, crate::alert::Level::Soon);
+        update(&mut s, key(KeyCode::Char('q')));
+        assert!(s.quit);
+    }
+
+    #[test]
+    fn z_snoozes_and_o_opens_the_call() {
+        let mut s = state();
+        with_meeting_in(&mut s, 3);
+        update(&mut s, key(KeyCode::Char('z')));
+        assert!(s.alert().silenced);
+        // soneca de 5 min vence com a reunião ainda na janela
+        s.now += chrono::Duration::minutes(6);
+        assert_eq!(s.alert().level, crate::alert::Level::Imminent);
+        let out = update(&mut s, key(KeyCode::Char('o')));
+        assert_eq!(out.effect, Some(Effect::OpenUrl("https://meet.google.com/abc".into())));
+        assert_eq!(s.alert().level, crate::alert::Level::Soon);
+    }
+
+    #[test]
+    fn agenda_panel_opens_and_copies_links() {
+        let mut s = state();
+        with_meeting_in(&mut s, 60);
+        s.focus = Panel::Agenda;
+        let out = update(&mut s, key(KeyCode::Char('y')));
+        assert_eq!(out.effect, Some(Effect::Copy("https://meet.google.com/abc".into())));
+        let out = update(&mut s, key(KeyCode::Char('o')));
+        assert_eq!(out.effect, Some(Effect::OpenUrl("https://meet.google.com/abc".into())));
     }
 
     #[test]

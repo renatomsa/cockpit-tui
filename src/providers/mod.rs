@@ -1,6 +1,7 @@
 //! Providers: tarefas assíncronas que publicam o último snapshot num `watch`.
 //! A UI só lê o valor mais recente; nenhuma fila cresce e nenhum provider bloqueia a tela.
 
+pub mod calendar;
 pub mod claude;
 pub mod docker;
 pub mod geo;

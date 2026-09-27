@@ -1,7 +1,9 @@
+mod alert;
 mod app;
 mod config;
 mod danger;
 mod locale;
+mod platform;
 mod providers;
 mod shell;
 mod terminal;
@@ -29,6 +31,10 @@ struct Cli {
     /// Tema desta execução (não fica gravado).
     #[arg(long)]
     theme: Option<String>,
+    /// Mostra reuniões de exemplo (uma começando em 4 min) em vez do Google Calendar,
+    /// para ver o alerta sem conectar nada.
+    #[arg(long)]
+    demo_agenda: bool,
     /// Arquivo onde gravar a pasta escolhida ao sair (usado pela função do `shell-init`).
     #[arg(long, hide = true)]
     cd_file: Option<PathBuf>,
@@ -43,6 +49,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ThemeCmd,
     },
+    /// Conecta serviços externos.
+    Auth {
+        #[command(subcommand)]
+        cmd: AuthCmd,
+    },
     /// Função de shell que faz o Enter trocar de pasta. Ponha no ~/.zshrc:
     /// eval "$(cockpit shell-init zsh)"
     ShellInit {
@@ -53,6 +64,16 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         cmd: ConfigCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCmd {
+    /// Autoriza a leitura do Google Calendar (abre o navegador).
+    Google {
+        /// JSON do cliente OAuth "App para computador" (padrão: [calendar].client_secret).
+        #[arg(long)]
+        client_secret: Option<PathBuf>,
     },
 }
 
@@ -84,15 +105,22 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Config { cmd: ConfigCmd::Init }) => config_init(cli.config.unwrap_or_else(|| paths.config_file())),
+        Some(Cmd::Auth { cmd: AuthCmd::Google { client_secret } }) => auth_google(cli.config, client_secret, &paths),
         Some(Cmd::ShellInit { shell }) => {
             print!("{}", shell::init_script(&shell)?);
             Ok(())
         }
-        None => run(cli.config, cli.theme, cli.cd_file, paths),
+        None => run(cli.config, cli.theme, cli.cd_file, cli.demo_agenda, paths),
     }
 }
 
-fn run(config_path: Option<PathBuf>, theme_arg: Option<String>, cd_file: Option<PathBuf>, paths: Paths) -> Result<()> {
+fn run(
+    config_path: Option<PathBuf>,
+    theme_arg: Option<String>,
+    cd_file: Option<PathBuf>,
+    demo_agenda: bool,
+    paths: Paths,
+) -> Result<()> {
     let _log_guard = init_logging(&paths);
     let loaded = config::load(config_path);
     let mut notices: Vec<String> = loaded.warning.into_iter().collect();
@@ -120,6 +148,7 @@ fn run(config_path: Option<PathBuf>, theme_arg: Option<String>, cd_file: Option<
     tracing::info!(config = %loaded.path.display(), "iniciando");
     let mut state = AppState::new(loaded.config, paths, themes, theme_idx, notices);
     state.has_cd_file = cd_file.is_some();
+    state.demo_agenda = demo_agenda;
     state.launcher = terminal::detect(&state.config.terminal.new_tab);
     tracing::info!(launcher = ?state.launcher, "aba nova");
 
@@ -134,6 +163,27 @@ fn run(config_path: Option<PathBuf>, theme_arg: Option<String>, cd_file: Option<
     if let (Some(file), Some(target)) = (cd_file, exit) {
         shell::write_cd_file(&file, &target)?;
     }
+    Ok(())
+}
+
+fn auth_google(config_path: Option<PathBuf>, client_secret: Option<PathBuf>, paths: &Paths) -> Result<()> {
+    use providers::calendar::oauth;
+    let loaded = config::load(config_path);
+    let client_path = client_secret.unwrap_or_else(|| oauth::client_path(&loaded.config.calendar));
+    let client = oauth::load_client(&client_path).map_err(|e| {
+        anyhow::anyhow!(
+            "{e:#}\n\nCrie um cliente OAuth do tipo \"App para computador\" no Google Cloud, baixe o JSON e salve em\n  {}\n(passo a passo no README, seção Google Calendar).",
+            client_path.display()
+        )
+    })?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let token_path = paths.google_token();
+    rt.block_on(async {
+        let http = providers::http_client();
+        oauth::authorize(&http, &client, &token_path).await
+    })?;
+    println!("\nPronto: agenda conectada (somente leitura). Token em {}.", token_path.display());
+    println!("Um cockpit já aberto pega a agenda sozinho em até 15 s.");
     Ok(())
 }
 

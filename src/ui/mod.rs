@@ -1,8 +1,9 @@
 //! Desenho. Só lê `AppState`; nunca faz I/O nem muda estado.
 
+mod agenda;
 mod bigclock;
 mod docker;
-mod hero;
+pub(crate) mod hero;
 pub mod layout;
 mod legend;
 mod sessions;
@@ -14,7 +15,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap},
+    widgets::{Block, BorderType, Clear, Padding, Paragraph},
 };
 
 use crate::app::state::{AppState, Panel};
@@ -39,7 +40,7 @@ pub fn draw(f: &mut Frame, s: &AppState) {
         sessions::draw(f, r, s);
     }
     if let Some(r) = a.agenda {
-        placeholder(f, r, s, Panel::Agenda, "Agenda", "Próximas reuniões do Google Calendar · F3 (`cockpit auth google`)");
+        agenda::draw(f, r, s);
     }
 
     statusbar(f, a.status, s);
@@ -108,16 +109,6 @@ pub(crate) fn panel_block<'a>(s: &AppState, panel: Panel, title: Option<&'a str>
     b
 }
 
-fn placeholder(f: &mut Frame, area: Rect, s: &AppState, panel: Panel, title: &str, text: &str) {
-    let block = panel_block(s, panel, Some(title));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    f.render_widget(
-        Paragraph::new(Line::styled(text, Style::new().fg(s.theme().muted))).wrap(Wrap { trim: true }),
-        inner,
-    );
-}
-
 fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
     let t = s.theme();
     let key = |k: &'static str| Span::styled(k, Style::new().fg(t.accent).add_modifier(Modifier::BOLD));
@@ -177,6 +168,7 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
                     ("Tab", " foco  "),
                     ("q", " sair"),
                 ],
+                Panel::Agenda => &[("↑↓", " escolher  "), ("o", " abrir a chamada  "), ("y", " copiar link  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Docker => &[("↑↓", " escolher  "), ("K", " parar container  "), ("X", " derrubar tudo  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Sessions => &[("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 _ => &[("Tab", " foco  "), ("t", " tema  "), ("i", " legenda  "), ("?", " ajuda  "), ("q", " sair")],
@@ -209,6 +201,8 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ("/ (Worktrees)", "filtra por nome ou branch; Esc limpa"),
         ("Enter (Claude)", "sai e vai para a pasta da conversa"),
         ("r (Claude)", "retoma uma conversa encerrada numa aba nova"),
+        ("o / y (Agenda)", "abre a chamada da reunião / copia o link"),
+        ("z (alerta)", "adia o alerta vermelho de reunião; qualquer outra tecla o para"),
         ("K (Docker)", "para o container selecionado (docker stop)"),
         ("X (Docker)", "derruba tudo: compose down --remove-orphans por projeto"),
         ("i", "legenda dos símbolos do painel em foco"),

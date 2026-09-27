@@ -11,7 +11,7 @@ A arquitetura e o roadmap estão em [`PLAN.md`](PLAN.md).
 | F0 | Loop, config, temas, layout responsivo, relógio grande, cidade/fuso por IP, relógios extras | ✅ |
 | F1 | Sistema (CPU, memória, swap, disco, rede, ping, PSI) + detector de travamento | ✅ |
 | F2 | Worktrees + sessões do Claude + seletor com `cd` | ✅ |
-| F3 | Google Calendar (OAuth2) + alerta vermelho | — |
+| F3 | Google Calendar (OAuth2) + alerta vermelho | ✅ |
 | F4 | Wi-Fi do host (WSL), speedtest, clima, mapa | — |
 | F5 | `theme install`, hot-reload, `doctor` | — |
 
@@ -39,6 +39,10 @@ Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 | `Enter` (Claude) | sai e vai para a pasta da conversa |
 | `r` (Claude) | retoma uma conversa encerrada (`claude --resume`) numa aba nova |
 | `i` | legenda dos símbolos do painel em foco |
+| qualquer tecla (alerta vermelho) | para o alerta da reunião |
+| `z` (alerta vermelho) | adia o alerta por 5 min |
+| `o` (alerta vermelho ou Agenda) | abre a chamada (Meet, Zoom, Teams) no navegador |
+| `y` (Agenda) | copia o link da reunião |
 | `K` (Docker) | para o container selecionado (`docker stop`), com confirmação |
 | `X` (Docker) | derruba tudo: `docker compose down --remove-orphans` em cada projeto e `docker stop` nos soltos, com confirmação |
 | `←→` `↑↓` (painel Sistema) | escolhe a coluna (TOP CPU / TOP MEM) e o processo |
@@ -46,7 +50,7 @@ Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 | `?` | ajuda |
 | `q` / `Ctrl+C` | sai |
 
-Outros comandos: `cockpit theme list`, `cockpit config path`, `cockpit --theme nord`.
+Outros comandos: `cockpit theme list`, `cockpit config path`, `cockpit --theme nord`, `cockpit auth google`, `cockpit --demo-agenda`.
 
 ## Temas
 
@@ -87,6 +91,33 @@ No vermelho, a métrica e os maiores ofensores piscam, a borda do painel fica ve
 No rodapé do painel fica o bloco MÁQUINA: sistema operacional, processador, núcleos físicos e threads, placa de vídeo e memória. No WSL, o Linux só enxerga a VM. Por isso os números vêm da máquina real, lidos uma vez do Windows pelo PowerShell na abertura, e o que o WSL recebe aparece entre parênteses, como em `8 threads (WSL usa 6)`. No Linux nativo, a placa de vídeo vem do `nvidia-smi` ou do `lspci`.
 
 O ping mede o tempo de conexão TCP a `1.1.1.1:443`, porque o WSL vem com ICMP sem root desligado (`net.ipv4.ping_group_range = 1 0`).
+
+## Google Calendar
+
+Com a agenda conectada, o painel Agenda lista as reuniões das próximas 48 h de todas as agendas visíveis no seu Google Calendar, sem as que você recusou. O relógio mostra a próxima reunião:
+- **Faltando até 15 min:** a borda do relógio e a linha da reunião ficam amarelas.
+- **Faltando até 5 min, ou até 5 min depois de começar:** o relógio inteiro fica vermelho e a linha da reunião pisca. Qualquer tecla para o alerta daquela reunião, `z` adia por 5 min e `o` abre a chamada.
+
+Eventos de dia inteiro nunca alertam. Os tempos são configuráveis em `[calendar]`.
+
+Para ver o alerta sem conectar nada: `cockpit --demo-agenda`, que cria uma reunião de exemplo começando em 4 min.
+
+### Conectar (uma vez)
+
+O cockpit usa um cliente OAuth seu, e não um app de terceiros; o acesso é somente leitura (`calendar.readonly`).
+
+1. Em [console.cloud.google.com](https://console.cloud.google.com), crie um projeto (ex.: `cockpit`).
+2. Em **APIs e serviços → Biblioteca**, ative a **Google Calendar API**.
+3. Em **Google Auth Platform → Público-alvo** (tela de consentimento), escolha **Interno** se a sua conta for do Google Workspace da empresa. Com conta pessoal, escolha **Externo** e adicione o seu e-mail como usuário de teste.
+4. Em **Google Auth Platform → Clientes → Criar cliente**, escolha o tipo **App para computador**, dê um nome e baixe o JSON.
+5. Salve o JSON onde o cockpit procura. No WSL, a pasta Downloads do Windows fica em `/mnt/c/Users/<você>/Downloads`:
+   ```sh
+   mkdir -p ~/.config/cockpit
+   cp /mnt/c/Users/<você>/Downloads/client_secret_*.json ~/.config/cockpit/google_client.json
+   ```
+6. Rode `cockpit auth google`. O navegador abre, você autoriza e a página confirma "Agenda conectada". Um cockpit já aberto pega a agenda sozinho em até 15 s.
+
+O token fica em `~/.local/state/cockpit/google_token.json`, com permissão 0600, e é renovado sozinho. Para desconectar, apague esse arquivo e remova o acesso em [myaccount.google.com/permissions](https://myaccount.google.com/permissions). Se a empresa bloquear apps não verificados, o administrador do Workspace precisa liberar o projeto.
 
 ## Docker
 

@@ -21,6 +21,7 @@ pub struct Config {
     pub worktrees: WorktreesConfig,
     pub claude: ClaudeConfig,
     pub terminal: TerminalConfig,
+    pub calendar: CalendarConfig,
 }
 
 impl Default for Config {
@@ -35,6 +36,7 @@ impl Default for Config {
             worktrees: WorktreesConfig::default(),
             claude: ClaudeConfig::default(),
             terminal: TerminalConfig::default(),
+            calendar: CalendarConfig::default(),
         }
     }
 }
@@ -218,6 +220,49 @@ impl Default for ClaudeConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CalendarConfig {
+    pub enabled: bool,
+    /// JSON do cliente OAuth "App para computador" baixado do Google Cloud.
+    pub client_secret: String,
+    /// Agendas mostradas (id ou nome). Vazio = as marcadas como visíveis no Google Calendar.
+    pub calendars: Vec<String>,
+    /// Agendas escondidas mesmo estando visíveis no Google (id ou nome).
+    pub exclude: Vec<String>,
+    pub refresh_secs: u64,
+    /// Quantas horas à frente buscar.
+    pub lookahead_hours: i64,
+    /// A tela fica vermelha quando faltam até N minutos…
+    pub alert_minutes: i64,
+    /// …e continua vermelha até N minutos depois do início.
+    pub alert_after_start_minutes: i64,
+    /// Aviso amarelo quando faltam até N minutos.
+    pub soon_minutes: i64,
+    /// Quanto tempo o `z` adia o alerta.
+    pub snooze_minutes: i64,
+    /// Mostra (sem alerta) as reuniões que você recusou.
+    pub show_declined: bool,
+}
+
+impl Default for CalendarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            client_secret: "~/.config/cockpit/google_client.json".into(),
+            calendars: Vec::new(),
+            exclude: Vec::new(),
+            refresh_secs: 60,
+            lookahead_hours: 48,
+            alert_minutes: 5,
+            alert_after_start_minutes: 5,
+            soon_minutes: 15,
+            snooze_minutes: 5,
+            show_declined: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
@@ -305,6 +350,13 @@ pub struct Paths {
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
     pub cache_dir: PathBuf,
+}
+
+impl Paths {
+    /// Onde fica o token do Google (fora do config, que costuma ir para dotfiles).
+    pub fn google_token(&self) -> PathBuf {
+        self.state_dir.join("google_token.json")
+    }
 }
 
 impl Paths {

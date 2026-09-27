@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -8,6 +11,7 @@ use crate::{
     danger::Level,
     providers::{
         Snapshot,
+        calendar::{CalendarSnapshot, Event},
         claude::{Session, SessionsSnapshot, Status},
         docker::DockerSnapshot,
         geo::Geo,
@@ -95,6 +99,14 @@ pub struct AppState {
     pub usage: Snapshot<UsageSnapshot>,
     pub specs: Snapshot<Specs>,
     pub docker: Snapshot<DockerSnapshot>,
+    pub calendar: Snapshot<CalendarSnapshot>,
+    /// `--demo-agenda`: eventos de exemplo em vez do Google.
+    pub demo_agenda: bool,
+    /// Até quando o alerta de reunião está adiado (`z`).
+    pub snoozed_until: Option<DateTime<Utc>>,
+    /// Reuniões cujo alerta o usuário já parou (`Event::key`).
+    pub dismissed: HashSet<String>,
+    pub agenda_sel: usize,
     pub docker_sel: usize,
     /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
@@ -145,6 +157,11 @@ impl AppState {
             usage: Snapshot::default(),
             specs: Snapshot::default(),
             docker: Snapshot::default(),
+            calendar: Snapshot::default(),
+            demo_agenda: false,
+            snoozed_until: None,
+            dismissed: HashSet::new(),
+            agenda_sel: 0,
             docker_sel: 0,
             wt_sessions: HashMap::new(),
             wt_sel: 0,
@@ -179,6 +196,16 @@ impl AppState {
     /// Algo na tela pisca e precisa de tick de meio segundo.
     pub fn animating(&self) -> bool {
         self.system.data.as_ref().is_some_and(|d| d.danger.worst() == Level::Critical)
+            || self.alert().level == crate::alert::Level::Imminent
+    }
+
+    pub fn events(&self) -> &[Event] {
+        self.calendar.data.as_ref().map(|d| d.events.as_slice()).unwrap_or(&[])
+    }
+
+    /// Alerta de reunião agora (recalculado a cada tick, sem rede).
+    pub fn alert(&self) -> crate::alert::Alert<'_> {
+        crate::alert::evaluate(self.events(), self.now, &self.config.calendar, self.snoozed_until, &self.dismissed)
     }
 
     /// Lista de processos da coluna selecionada.

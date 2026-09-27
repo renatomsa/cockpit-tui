@@ -44,6 +44,8 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
                 (st("Orlando 15:15", fg), "relógios extras, de [[clock.extra]] no config"),
                 (st("UTC-03:00", fg), "fuso da cidade atual"),
                 (st("geo ipinfo.io", muted), "(barra de status) de onde veio a cidade: config, cache ou serviço de IP"),
+                (st("▶ 16:00 Daily · em 4 min", Style::new().fg(t.warn).add_modifier(Modifier::BOLD)), "próxima reunião; amarelo quando falta pouco"),
+                (st(" tela vermelha ", Style::new().fg(t.alert_fg).bg(t.alert_bg).add_modifier(Modifier::BOLD)), "reunião começando: qualquer tecla para, `z` adia, `o` abre a chamada"),
             ],
         ),
         Panel::Docker => (
@@ -62,7 +64,15 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
         ),
         Panel::Agenda => (
             "Agenda",
-            vec![(st("—", muted), "o Google Calendar chega na F3: próximas reuniões e o alerta vermelho antes delas")],
+            vec![
+                (st("hoje", Style::new().fg(t.accent)), "dia da reunião (hoje, amanhã, depois o dia da semana)"),
+                (st("agora · até 16:30", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "reunião em andamento"),
+                (st("em 12 min", Style::new().fg(t.warn).add_modifier(Modifier::BOLD)), "começa em breve (dentro de soon_minutes)"),
+                (st("Meet", Style::new().fg(t.highlight)), "tem link de chamada (Meet, Zoom, Teams); `o` abre, `y` copia"),
+                (st("dia todo", muted), "evento de dia inteiro: nunca dispara alerta"),
+                (st(" ▶ 16:00 Daily ", Style::new().fg(t.alert_fg).bg(t.alert_bg).add_modifier(Modifier::BOLD)), "no relógio: vermelho quando faltam até 5 min (ou começou há até 5)"),
+                (st("z", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "no alerta vermelho: adia 5 min; qualquer outra tecla para; `o` abre a chamada"),
+            ],
         ),
         Panel::Worktrees => {
             let mut v = vec![

@@ -68,6 +68,21 @@ recent_max = 5
 usage_limits = true
 usage_refresh_secs = 180
 
+[calendar]
+# Google Calendar. Passo a passo no README (seção Google Calendar); depois rode
+# `cockpit auth google`. O token fica em ~/.local/state/cockpit/google_token.json (0600).
+enabled = true
+client_secret = "~/.config/cockpit/google_client.json"
+calendars = []                  # vazio = as agendas visíveis no Google Calendar
+exclude = []                    # ex.: ["Feriados no Brasil"]
+refresh_secs = 60
+lookahead_hours = 48
+alert_minutes = 5               # tela vermelha quando faltam até 5 min…
+alert_after_start_minutes = 5   # …e até 5 min depois do início
+soon_minutes = 15               # aviso amarelo quando faltam até 15 min
+snooze_minutes = 5              # quanto o `z` adia o alerta
+show_declined = false
+
 [terminal]
 # Como abrir a aba nova do `C` (worktrees) e do `r` (conversas). Vazio = automático:
 # tmux → Windows Terminal (WSL) → kitty → WezTerm → gnome-terminal.

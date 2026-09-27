@@ -49,6 +49,13 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
     providers::specs::spawn(specs_tx);
     let (docker_tx, mut docker_rx) = watch::channel(Snapshot::default());
     providers::docker::spawn(docker_tx);
+    let (cal_tx, mut cal_rx) = watch::channel(Snapshot::default());
+    if state.demo_agenda {
+        update(&mut state, Action::Calendar(Snapshot::ok(providers::calendar::demo(Utc::now()))));
+    } else {
+        providers::calendar::spawn(state.config.calendar.clone(), state.paths.google_token(), cal_tx);
+    }
+    let mut cal_alive = !state.demo_agenda;
     let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive, mut usage_alive, mut specs_alive, mut docker_alive) =
         (true, true, true, true, true, true, true);
     // Resultados de efeitos (ex.: o kill) voltam como ações.
@@ -107,6 +114,10 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 Ok(()) => Action::Docker(docker_rx.borrow_and_update().clone()),
                 Err(_) => { docker_alive = false; continue }
             },
+            changed = cal_rx.changed(), if cal_alive => match changed {
+                Ok(()) => Action::Calendar(cal_rx.borrow_and_update().clone()),
+                Err(_) => { cal_alive = false; continue }
+            },
             Some(a) = act_rx.recv() => a,
         };
 
@@ -145,6 +156,15 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
             });
         }
         Effect::Copy(text) => crate::shell::osc52_copy(&text),
+        Effect::OpenUrl(url) => {
+            tokio::task::spawn_blocking(move || {
+                let msg = match crate::platform::open_url(&url) {
+                    Ok(()) => format!("abrindo {url}"),
+                    Err(e) => format!("não consegui abrir o navegador: {e:#}"),
+                };
+                let _ = results.send(Action::Notice(msg));
+            });
+        }
         Effect::OpenTab { launcher, dir, cmd, title } => {
             tokio::task::spawn_blocking(move || {
                 let msg = match crate::terminal::open(&launcher, &dir, &cmd, &title) {
