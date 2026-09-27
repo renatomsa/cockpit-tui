@@ -15,8 +15,6 @@ pub struct PingSnapshot {
     pub target: String,
     /// Último RTT em ms; `None` se a última tentativa falhou.
     pub last_ms: Option<f64>,
-    /// Histórico (mais antigo primeiro); `None` = perdido.
-    pub hist: Vec<Option<f64>>,
     pub jitter_ms: Option<f64>,
     pub loss_pct: f64,
 }
@@ -52,7 +50,6 @@ pub fn spawn(target: String, interval_secs: u64, tx: watch::Sender<Snapshot<Ping
                 last_ms: rtt,
                 jitter_ms: jitter(&h),
                 loss_pct: loss(&h),
-                hist: h,
             };
             let mut out = Snapshot::ok(snap);
             if rtt.is_none() {

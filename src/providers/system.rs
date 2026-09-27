@@ -2,7 +2,7 @@
 //! e publica um snapshot por segundo.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs,
     path::Path,
     thread,
@@ -18,15 +18,10 @@ use crate::{
     danger::{Danger, Evaluator, Sample},
 };
 
-/// Quantos segundos de histórico as sparklines guardam.
-pub const HISTORY: usize = 120;
-
 #[derive(Clone, Debug, Default)]
 pub struct SystemSnapshot {
     /// Uso total de CPU, 0–100.
     pub cpu: f32,
-    pub cores: Vec<f32>,
-    pub cpu_hist: Vec<f32>,
     pub load: (f64, f64, f64),
     pub mem_used: u64,
     pub mem_total: u64,
@@ -67,8 +62,6 @@ pub struct NetRates {
     /// Bytes por segundo.
     pub rx: f64,
     pub tx: f64,
-    pub rx_hist: Vec<f64>,
-    pub tx_hist: Vec<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -116,7 +109,6 @@ pub fn spawn(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
 fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
     let mut sys = System::new();
     let mut eval = Evaluator::new(cfg.danger.clone());
-    let mut cpu_hist: VecDeque<f32> = VecDeque::with_capacity(HISTORY);
     let mut net = NetCounter::default();
     let mut snap = SystemSnapshot::default();
     // Sem `without_tasks` o sysinfo lista cada thread como processo (libuv-worker ×16…).
@@ -135,9 +127,6 @@ fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
         sys.refresh_cpu_usage();
         sys.refresh_memory();
         snap.cpu = sys.global_cpu_usage();
-        snap.cores = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
-        push(&mut cpu_hist, snap.cpu);
-        snap.cpu_hist = cpu_hist.iter().copied().collect();
         let l = System::load_average();
         snap.load = (l.one, l.five, l.fifteen);
         snap.mem_total = sys.total_memory();
@@ -199,13 +188,6 @@ fn pick_name<'a>(comm: std::borrow::Cow<'a, str>, exe: Option<std::borrow::Cow<'
         Some(e) if GENERIC.contains(&comm.as_ref()) && !e.is_empty() => e,
         _ => comm,
     }
-}
-
-fn push<T>(q: &mut VecDeque<T>, v: T) {
-    if q.len() == HISTORY {
-        q.pop_front();
-    }
-    q.push_back(v);
 }
 
 /// Agrupa por nome e devolve os `n` maiores por CPU e por memória.
@@ -285,8 +267,6 @@ fn read_battery(dir: &Path) -> Option<Battery> {
 #[derive(Default)]
 struct NetCounter {
     last: Option<(Instant, String, u64, u64)>,
-    rx_hist: VecDeque<f64>,
-    tx_hist: VecDeque<f64>,
 }
 
 impl NetCounter {
@@ -312,14 +292,10 @@ impl NetCounter {
         };
         self.last = Some((now, name.clone(), rx, tx));
         let (rrx, rtx) = rates?;
-        push(&mut self.rx_hist, rrx);
-        push(&mut self.tx_hist, rtx);
         Some(NetRates {
             iface: name,
             rx: rrx,
             tx: rtx,
-            rx_hist: self.rx_hist.iter().copied().collect(),
-            tx_hist: self.tx_hist.iter().copied().collect(),
         })
     }
 }

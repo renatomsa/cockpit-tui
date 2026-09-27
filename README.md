@@ -59,7 +59,7 @@ Em terminal sem truecolor, as cores são convertidas para a paleta de 256. O Win
 
 ## Sistema e detector de travamento
 
-O painel Sistema mostra CPU (total, histórico de 2 min e por núcleo), load, memória, swap, pressão (PSI), discos, rede da interface da rota padrão, ping e os maiores ofensores de CPU e memória, agrupados por nome.
+O painel Sistema mostra CPU e load, memória, swap, pressão (PSI), discos, rede da interface da rota padrão, ping e os maiores ofensores de CPU e memória, agrupados por nome.
 
 | Métrica | Amarelo | Vermelho piscando |
 |---|---|---|

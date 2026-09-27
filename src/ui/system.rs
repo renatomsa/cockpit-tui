@@ -93,28 +93,6 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
     let mut l = gauge(t, "CPU", d.cpu as f64, bar_w, dz.cpu, blink);
     l.spans.push(muted(t, format!("load {:.2} {:.2} {:.2}", d.load.0, d.load.1, d.load.2)));
     rows.push((0, l));
-    let hist: Vec<f64> = d.cpu_hist.iter().map(|v| *v as f64).collect();
-    let hist_w = bar_w + PCT_W;
-    let secs = hist.len().min(hist_w * 2);
-    rows.push((
-        3,
-        Line::from(vec![
-            indent(),
-            Span::styled(braille(&hist, 100.0, hist_w), Style::new().fg(t.spark)),
-            muted(t, format!("  últimos {secs}s")),
-        ]),
-    ));
-    let mut cores = vec![indent(), muted(t, "núcleos".into())];
-    let room = w.saturating_sub(LABEL_W + 7) / 4;
-    for (i, c) in d.cores.iter().enumerate() {
-        if i == room && d.cores.len() > room {
-            cores.push(muted(t, " …".into()));
-            break;
-        }
-        let c = *c as f64;
-        cores.push(Span::styled(format!("{c:>4.0}"), Style::new().fg(gauge_color(t, c, Level::Ok))));
-    }
-    rows.push((4, Line::from(cores)));
     rows.push(spacer());
 
     // ── Memória
@@ -155,21 +133,16 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
         rows.push(spacer());
     }
 
-    // ── Rede. O texto ocupa a largura da barra + %, e o gráfico começa na coluna
-    // dos detalhes, igual para REDE e PING.
-    let text_w = bar_w + PCT_W;
-    let graph_w = w.saturating_sub(LABEL_W + text_w + 1).min(24);
-    let pad = |s: String| format!("{s:<text_w$}");
+    // ── Rede
     match &d.net {
         Some(n) => {
-            let head = pad(format!("↓ {:<9} ↑ {:<9} {}", rate(n.rx), rate(n.tx), n.iface));
-            let max = n.rx_hist.iter().chain(&n.tx_hist).copied().fold(1.0, f64::max);
             rows.push((
                 1,
                 Line::from(vec![
                     label(t, "REDE", Level::Ok, blink),
-                    Span::styled(head, Style::new().fg(t.fg)),
-                    Span::styled(braille(&n.rx_hist, max, graph_w), Style::new().fg(t.spark)),
+                    Span::styled(format!("↓ {:<10}", rate(n.rx)), Style::new().fg(t.spark)),
+                    Span::styled(format!("↑ {:<10}", rate(n.tx)), Style::new().fg(t.spark)),
+                    muted(t, n.iface.clone()),
                 ]),
             ));
         }
@@ -183,17 +156,12 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
             };
             let jit = p.jitter_ms.map(|j| format!("±{j:.0}")).unwrap_or_default();
             let host = p.target.trim_end_matches(":443").to_string();
-            let mid = format!(" {jit:<4} perda {:.0}%  {host}", p.loss_pct);
-            let mid = format!("{mid:<w$}", w = text_w.saturating_sub(txt.chars().count()));
-            let vals: Vec<f64> = p.hist.iter().map(|x| x.unwrap_or(0.0)).collect();
-            let max = vals.iter().copied().fold(1.0, f64::max);
             rows.push((
                 1,
                 Line::from(vec![
                     label(t, "PING", Level::Ok, blink),
-                    Span::styled(txt, Style::new().fg(color).add_modifier(Modifier::BOLD)),
-                    muted(t, mid),
-                    Span::styled(braille(&vals, max, graph_w), Style::new().fg(t.spark)),
+                    Span::styled(format!("{txt:<12}"), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                    muted(t, format!("{jit:<5} perda {:.0}%  {host}", p.loss_pct)),
                 ]),
             ));
         }
@@ -335,34 +303,6 @@ fn bar(pct: f64, width: usize) -> (String, String) {
     (filled, "━".repeat(width - used))
 }
 
-/// Gráfico em braille: 2 amostras por célula, 4 níveis de altura cada. Os pontos ficam
-/// dentro da célula, então o gráfico não se mistura com as linhas de cima e de baixo.
-/// Alinhado à direita (a amostra mais recente fica na ponta).
-fn braille(values: &[f64], max: f64, width: usize) -> String {
-    const LEFT: [u32; 4] = [0x40, 0x04, 0x02, 0x01];
-    const RIGHT: [u32; 4] = [0x80, 0x20, 0x10, 0x08];
-    let n = width * 2;
-    let vals = &values[values.len().saturating_sub(n)..];
-    let pad = n - vals.len();
-    let level = |i: usize| -> usize {
-        if i < pad {
-            return 0;
-        }
-        let v = vals[i - pad];
-        if v <= 0.0 { 0 } else { ((v / max.max(f64::EPSILON)) * 4.0).ceil().clamp(1.0, 4.0) as usize }
-    };
-    (0..width)
-        .map(|c| {
-            let (l, r) = (level(c * 2), level(c * 2 + 1));
-            if l == 0 && r == 0 {
-                return ' ';
-            }
-            let bits = LEFT[..l].iter().sum::<u32>() + RIGHT[..r].iter().sum::<u32>();
-            char::from_u32(0x2800 + bits).unwrap_or(' ')
-        })
-        .collect()
-}
-
 fn truncate(s: &str, w: usize) -> String {
     if s.chars().count() <= w {
         s.to_string()
@@ -399,16 +339,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bars_and_braille() {
+    fn bars() {
         assert_eq!(bar(0.0, 4), (String::new(), "━━━━".into()));
         assert_eq!(bar(100.0, 4), ("━━━━".into(), String::new()));
         assert_eq!(bar(50.0, 4), ("━━".into(), "━━".into()));
         assert_eq!(bar(62.5, 4), ("━━╸".into(), "━".into()));
-        // 0 → vazio, 50% → 2 pontos, 100% → coluna cheia; alinhado à direita
-        assert_eq!(braille(&[0.0, 50.0, 100.0], 100.0, 2), " ⣼");
-        assert_eq!(braille(&[100.0, 100.0], 100.0, 1), "⣿");
-        assert_eq!(braille(&[1.0], 100.0, 1), "⢀");
-        assert_eq!(braille(&[], 100.0, 3), "   ");
     }
 
     #[test]
