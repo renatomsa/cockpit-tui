@@ -2,6 +2,8 @@
 //! A UI só lê o valor mais recente; nenhuma fila cresce e nenhum provider bloqueia a tela.
 
 pub mod geo;
+pub mod ping;
+pub mod system;
 
 use std::time::Duration;
 

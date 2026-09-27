@@ -19,6 +19,7 @@ ratatui = "0.30.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "fs", "net"] }
 toml = "1.1.6"
 tracing = "0.1.44"

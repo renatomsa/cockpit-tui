@@ -3,7 +3,8 @@ use chrono_tz::Tz;
 
 use crate::{
     config::{Config, Paths},
-    providers::{Snapshot, geo::Geo},
+    danger::Level,
+    providers::{Snapshot, geo::Geo, ping::PingSnapshot, system::SystemSnapshot},
     theme::{Theme, ThemeRegistry},
 };
 
@@ -31,6 +32,27 @@ impl Panel {
     }
 }
 
+/// Coluna de processos selecionada no painel de sistema.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProcCol {
+    #[default]
+    Cpu,
+    Mem,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcSel {
+    pub col: ProcCol,
+    pub row: usize,
+}
+
+/// Processo aguardando confirmação do `K`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KillTarget {
+    pub pid: u32,
+    pub name: String,
+}
+
 /// Todo o estado da tela. Só `update` escreve aqui; só `ui::draw` lê.
 pub struct AppState {
     pub now: DateTime<Utc>,
@@ -39,6 +61,11 @@ pub struct AppState {
     pub themes: ThemeRegistry,
     pub theme_idx: usize,
     pub geo: Snapshot<Geo>,
+    pub system: Snapshot<SystemSnapshot>,
+    pub ping: Snapshot<PingSnapshot>,
+    pub proc_sel: ProcSel,
+    pub confirm_kill: Option<KillTarget>,
+    pub self_pid: u32,
     /// Fuso da cidade atual (geolocalização → config → sistema → UTC).
     pub tz: Tz,
     pub system_tz: Tz,
@@ -62,6 +89,11 @@ impl AppState {
             themes,
             theme_idx,
             geo: Snapshot::default(),
+            system: Snapshot::default(),
+            ping: Snapshot::default(),
+            proc_sel: ProcSel::default(),
+            confirm_kill: None,
+            self_pid: std::process::id(),
             tz: system_tz,
             system_tz,
             extra_clocks,
@@ -76,6 +108,25 @@ impl AppState {
 
     pub fn theme(&self) -> &Theme {
         self.themes.get(self.theme_idx)
+    }
+
+    /// Fase do pisca-pisca (2 Hz): o loop acorda a cada meio segundo enquanto `animating()`.
+    pub fn blink_on(&self) -> bool {
+        self.now.timestamp_subsec_millis() < 500
+    }
+
+    /// Algo na tela pisca e precisa de tick de meio segundo.
+    pub fn animating(&self) -> bool {
+        self.system.data.as_ref().is_some_and(|d| d.danger.worst() == Level::Critical)
+    }
+
+    /// Lista de processos da coluna selecionada.
+    pub fn selected_procs(&self) -> &[crate::providers::system::ProcGroup] {
+        match (&self.system.data, self.proc_sel.col) {
+            (Some(d), ProcCol::Cpu) => &d.top_cpu,
+            (Some(d), ProcCol::Mem) => &d.top_mem,
+            (None, _) => &[],
+        }
     }
 
     pub fn recompute_tz(&mut self) {

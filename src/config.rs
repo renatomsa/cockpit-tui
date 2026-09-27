@@ -17,6 +17,7 @@ pub struct Config {
     pub clock: ClockConfig,
     pub location: LocationConfig,
     pub layout: LayoutConfig,
+    pub system: SystemConfig,
 }
 
 impl Default for Config {
@@ -27,6 +28,7 @@ impl Default for Config {
             clock: ClockConfig::default(),
             location: LocationConfig::default(),
             layout: LayoutConfig::default(),
+            system: SystemConfig::default(),
         }
     }
 }
@@ -103,6 +105,70 @@ pub struct LayoutConfig {
 impl Default for LayoutConfig {
     fn default() -> Self {
         Self { wide_min_cols: 110, compact_max_rows: 30, left_percent: 62 }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SystemConfig {
+    /// Alvo do ping. Sem ICMP sem root, mede o tempo de conexão TCP (`host:porta`).
+    pub ping_target: String,
+    pub ping_interval_secs: u64,
+    /// Pontos de montagem mostrados. Vazio = automático (`/`, `/home`, `/mnt/<letra>`, `/media/*`).
+    pub disks: Vec<String>,
+    /// Quantos processos em cada lista de maiores ofensores.
+    pub top_n: usize,
+    pub danger: DangerConfig,
+}
+
+impl Default for SystemConfig {
+    fn default() -> Self {
+        Self {
+            ping_target: "1.1.1.1:443".into(),
+            ping_interval_secs: 5,
+            disks: Vec::new(),
+            top_n: 5,
+            danger: DangerConfig::default(),
+        }
+    }
+}
+
+/// Limiares do detector de travamento, em % (PSI em % de tempo travado, média de 10 s).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DangerConfig {
+    pub mem_warn: f64,
+    pub mem_crit: f64,
+    pub swap_warn: f64,
+    pub swap_crit: f64,
+    pub psi_mem_warn: f64,
+    pub psi_mem_crit: f64,
+    pub cpu_warn: f64,
+    pub cpu_crit: f64,
+    /// Por quantos segundos a CPU precisa ficar alta para contar.
+    pub cpu_window_secs: usize,
+    pub disk_warn: f64,
+    pub disk_crit: f64,
+    /// Quanto o valor precisa cair abaixo do limiar para o alerta baixar (evita pisca-pisca).
+    pub hysteresis: f64,
+}
+
+impl Default for DangerConfig {
+    fn default() -> Self {
+        Self {
+            mem_warn: 85.0,
+            mem_crit: 93.0,
+            swap_warn: 50.0,
+            swap_crit: 80.0,
+            psi_mem_warn: 5.0,
+            psi_mem_crit: 20.0,
+            cpu_warn: 90.0,
+            cpu_crit: 98.0,
+            cpu_window_secs: 10,
+            disk_warn: 90.0,
+            disk_crit: 97.0,
+            hysteresis: 3.0,
+        }
     }
 }
 

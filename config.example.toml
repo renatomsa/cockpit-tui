@@ -29,6 +29,27 @@ tz = "America/New_York"
 # lon = -43.1729
 refresh_minutes = 60
 
+[system]
+ping_target = "1.1.1.1:443"   # host:porta; mede o tempo de conexão TCP
+ping_interval_secs = 5
+disks = []                    # vazio = automático; ex.: ["/", "/mnt/c"]
+top_n = 5                     # processos em cada lista de ofensores
+
+# Detector de travamento. Amarelo acima de *_warn; vermelho piscando acima de *_crit.
+[system.danger]
+mem_warn = 85.0
+mem_crit = 93.0
+swap_warn = 50.0        # só avisa se a swap estiver subindo
+swap_crit = 80.0
+psi_mem_warn = 5.0      # % do tempo com tarefas travadas esperando memória
+psi_mem_crit = 20.0
+cpu_warn = 90.0
+cpu_crit = 98.0
+cpu_window_secs = 10    # CPU precisa ficar alta por esse tempo
+disk_warn = 90.0
+disk_crit = 97.0
+hysteresis = 3.0        # quanto precisa cair abaixo do limiar para o alerta baixar
+
 [layout]
 wide_min_cols = 110     # a partir daqui, duas colunas
 compact_max_rows = 30   # abaixo daqui, só o hero

@@ -10,7 +10,10 @@ use anyhow::Result;
 use chrono::Utc;
 use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
-use tokio::{sync::watch, time::Instant};
+use tokio::{
+    sync::{mpsc, watch},
+    time::Instant,
+};
 
 use self::{
     state::AppState,
@@ -30,6 +33,14 @@ pub async fn run(mut state: AppState) -> Result<()> {
     if geo_rx.has_changed().unwrap_or(false) {
         update(&mut state, Action::Geo(geo_rx.borrow_and_update().clone()));
     }
+
+    let (sys_tx, mut sys_rx) = watch::channel(Snapshot::default());
+    providers::system::spawn(state.config.system.clone(), sys_tx);
+    let (ping_tx, mut ping_rx) = watch::channel(Snapshot::default());
+    providers::ping::spawn(state.config.system.ping_target.clone(), state.config.system.ping_interval_secs, ping_tx);
+    let (mut sys_alive, mut ping_alive) = (true, true);
+    // Resultados de efeitos (ex.: o kill) voltam como ações.
+    let (act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
 
     let mut terminal = ratatui::init();
     let mut events = EventStream::new();
@@ -51,17 +62,26 @@ pub async fn run(mut state: AppState) -> Result<()> {
                 Some(Err(e)) => break Err(e.into()),
                 None => break Ok(()),
             },
-            _ = tokio::time::sleep_until(next_tick()) => Action::Tick(Utc::now()),
+            _ = tokio::time::sleep_until(next_tick(state.animating())) => Action::Tick(Utc::now()),
             changed = geo_rx.changed(), if geo_alive => match changed {
                 Ok(()) => Action::Geo(geo_rx.borrow_and_update().clone()),
                 Err(_) => { geo_alive = false; continue }
             },
+            changed = sys_rx.changed(), if sys_alive => match changed {
+                Ok(()) => Action::System(Box::new(sys_rx.borrow_and_update().clone())),
+                Err(_) => { sys_alive = false; continue }
+            },
+            changed = ping_rx.changed(), if ping_alive => match changed {
+                Ok(()) => Action::Ping(ping_rx.borrow_and_update().clone()),
+                Err(_) => { ping_alive = false; continue }
+            },
+            Some(a) = act_rx.recv() => a,
         };
 
         let out = update(&mut state, action);
         redraw |= out.redraw;
         if let Some(effect) = out.effect {
-            run_effect(&state, effect);
+            run_effect(&state, effect, act_tx.clone());
         }
         if state.quit {
             break Ok(());
@@ -74,13 +94,15 @@ pub async fn run(mut state: AppState) -> Result<()> {
 
 /// Próxima virada de segundo do relógio de parede (+2 ms de folga), para os
 /// segundos do relógio grande mudarem no instante certo e não "pularem".
-fn next_tick() -> Instant {
+/// Com `fast`, vira a cada meio segundo (pisca-pisca a 2 Hz).
+fn next_tick(fast: bool) -> Instant {
+    let period: u64 = if fast { 500_000_000 } else { 1_000_000_000 };
     let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let into = since.subsec_nanos() as u64;
-    Instant::now() + Duration::from_nanos(1_000_000_000 - into) + Duration::from_millis(2)
+    let into = since.subsec_nanos() as u64 % period;
+    Instant::now() + Duration::from_nanos(period - into) + Duration::from_millis(2)
 }
 
-fn run_effect(state: &AppState, effect: Effect) {
+fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<Action>) {
     match effect {
         Effect::PersistTheme(name) => {
             let paths = state.paths.clone();
@@ -88,6 +110,18 @@ fn run_effect(state: &AppState, effect: Effect) {
                 if let Err(e) = (PersistedState { theme: Some(name) }).save(&paths) {
                     tracing::warn!("não gravei o tema escolhido: {e:#}");
                 }
+            });
+        }
+        Effect::Kill(t) => {
+            tokio::task::spawn_blocking(move || {
+                let res = std::process::Command::new("kill").args(["-TERM", &t.pid.to_string()]).output();
+                let msg = match res {
+                    Ok(o) if o.status.success() => format!("SIGTERM enviado para {} (pid {})", t.name, t.pid),
+                    Ok(o) => format!("kill {} falhou: {}", t.pid, String::from_utf8_lossy(&o.stderr).trim()),
+                    Err(e) => format!("kill {} falhou: {e}", t.pid),
+                };
+                tracing::info!("{msg}");
+                let _ = results.send(Action::Notice(msg));
             });
         }
     }

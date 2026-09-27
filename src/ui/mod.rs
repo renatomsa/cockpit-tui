@@ -3,6 +3,7 @@
 mod bigclock;
 mod hero;
 pub mod layout;
+mod system;
 
 use ratatui::{
     Frame,
@@ -21,10 +22,12 @@ pub fn draw(f: &mut Frame, s: &AppState) {
 
     let a = layout::compute(area, &s.config.layout);
     hero::draw(f, a.hero, s);
+    if let Some(r) = a.system {
+        system::draw(f, r, s);
+    }
 
     let placeholders = [
         (a.agenda, Panel::Agenda, "Agenda", "Próximas reuniões do Google Calendar · F3 (`cockpit auth google`)"),
-        (a.system, Panel::System, "Sistema", "CPU, memória, swap, disco, rede, ping e maiores ofensores · F1"),
         (a.worktrees, Panel::Worktrees, "Worktrees", "Worktrees do Claude por projeto, com seletor que dá `cd` · F2"),
         (a.sessions, Panel::Sessions, "Claude", "Conversas do Claude em aberto (esperando / trabalhando) · F2"),
     ];
@@ -38,6 +41,38 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if s.show_help {
         help(f, area, s);
     }
+    if let Some(k) = &s.confirm_kill {
+        confirm_kill(f, area, s, k);
+    }
+}
+
+fn confirm_kill(f: &mut Frame, area: Rect, s: &AppState, k: &crate::app::state::KillTarget) {
+    let t = s.theme();
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Encerrar ", Style::new().fg(t.fg)),
+            Span::styled(k.name.clone(), Style::new().fg(t.alert).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" (pid {}) com SIGTERM?", k.pid), Style::new().fg(t.fg)),
+        ]),
+        Line::from(vec![
+            Span::styled("y", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" confirma · qualquer outra tecla cancela", Style::new().fg(t.muted)),
+        ]),
+    ];
+    let w = (lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4).min(area.width);
+    let h = 4.min(area.height);
+    let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(t.alert))
+                .title(" encerrar processo ")
+                .style(Style::new().bg(t.bg)),
+        ),
+        r,
+    );
 }
 
 /// Moldura padrão de painel; o painel em foco ganha a cor de destaque.
@@ -76,6 +111,19 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
             key("x"),
             lbl(" dispensar"),
         ]),
+        None if s.focus == Panel::System => Line::from(vec![
+            Span::raw(" "),
+            key("←→"),
+            lbl(" coluna  "),
+            key("↑↓"),
+            lbl(" processo  "),
+            key("K"),
+            lbl(" encerrar  "),
+            key("Tab"),
+            lbl(" foco  "),
+            key("q"),
+            lbl(" sair"),
+        ]),
         None => Line::from(vec![
             Span::raw(" "),
             key("Tab"),
@@ -98,7 +146,16 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
         (Some(g), None) => lbl_owned(format!("geo {}", g.source.label()), t.muted),
         (None, None) => lbl_owned("geo …".into(), t.muted),
     };
-    let right = Line::from(vec![geo, lbl("  ·  "), Span::styled(t.name.clone(), Style::new().fg(t.accent)), Span::raw(" ")]);
+    let mut right = Vec::new();
+    // O alerta de sistema aparece aqui também: no modo compacto o painel some.
+    if let Some(d) = &s.system.data
+        && let Some((lvl, reason)) = d.danger.reasons.first()
+    {
+        right.push(Span::styled(format!(" ⚠ {reason} "), system::level_style(t, *lvl, s.blink_on())));
+        right.push(lbl("  ·  "));
+    }
+    right.extend([geo, lbl("  ·  "), Span::styled(t.name.clone(), Style::new().fg(t.accent)), Span::raw(" ")]);
+    let right = Line::from(right);
 
     let rw = right.width() as u16;
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw)]).areas(area);
@@ -115,6 +172,8 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
     let rows = [
         ("Tab / Shift+Tab", "alterna o painel em foco"),
         ("t / T", "próximo / anterior tema (fica lembrado)"),
+        ("←→ ↑↓ (Sistema)", "escolhe coluna e processo"),
+        ("K (Sistema)", "encerra o processo com SIGTERM (pede confirmação)"),
         ("x", "dispensa o aviso da barra"),
         ("?", "abre/fecha esta ajuda"),
         ("q / Ctrl+C", "sai"),

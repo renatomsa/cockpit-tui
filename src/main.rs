@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod danger;
 mod locale;
 mod providers;
 mod theme;
