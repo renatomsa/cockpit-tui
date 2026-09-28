@@ -229,7 +229,7 @@ fn meeting_line(s: &AppState, alert: &Alert, p: &Palette, w: usize) -> Line<'sta
     let t = s.theme();
     let Some(ev) = alert.event else {
         let msg = match (&s.calendar.data, &s.calendar.error) {
-            (_, Some(e)) if not_connected_hint(e) => "agenda não conectada · rode `cockpit auth google`".to_string(),
+            (_, Some(e)) if not_connected_hint(e) => "agenda não conectada · rode `cockpit calendar add '<endereço iCal>'`".to_string(),
             (None, Some(e)) => format!("agenda: {e}"),
             (None, None) if s.config.calendar.enabled => "lendo a agenda…".into(),
             (None, None) => String::new(),

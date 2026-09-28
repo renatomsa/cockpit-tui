@@ -205,9 +205,32 @@ async fn network_checks(cfg: &config::Config, paths: &Paths) -> Vec<Check> {
         if !cfg.calendar.enabled {
             return info("agenda", "desligada ([calendar].enabled = false)");
         }
+        let mut sources = cfg.calendar.ical.clone();
+        sources.extend(providers::calendar::load_ical_store(&paths.ical_store()));
+        if !sources.is_empty() {
+            let http = reqwest::Client::builder().timeout(t(30)).build().unwrap_or(http.clone());
+            let now = chrono::Utc::now();
+            let mut total = 0;
+            let mut bad = Vec::new();
+            for s in &sources {
+                match providers::calendar::fetch_ical(&http, s, now, now + chrono::Duration::hours(cfg.calendar.lookahead_hours)).await {
+                    Ok((_, evs)) => total += evs.len(),
+                    Err(e) => bad.push(format!("{e:#}")),
+                }
+            }
+            return if bad.is_empty() {
+                ok("agenda", format!("{} endereço(s) iCal, {total} evento(s) nas próximas {} h", sources.len(), cfg.calendar.lookahead_hours))
+            } else {
+                fail("agenda", bad.join("; "), "confira o endereço (`cockpit calendar list`) ou gere outro no Google")
+            };
+        }
         let cp = oauth::client_path(&cfg.calendar);
         let Ok(client) = oauth::load_client(&cp) else {
-            return warn("agenda", format!("sem cliente OAuth em {}", cp.display()), "README, seção Google Calendar (ou `cockpit --demo-agenda` para ver o alerta)");
+            return warn(
+                "agenda",
+                "não conectada",
+                "Google Calendar › Configurações › sua agenda › Integrar agenda › endereço iCal, e `cockpit calendar add '<endereço>'`",
+            );
         };
         let Some(mut tok) = oauth::load_token(&paths.google_token()) else {
             return warn("agenda", "cliente OAuth ok, mas não conectado", "rode `cockpit auth google`");

@@ -52,6 +52,11 @@ enum Cmd {
     },
     /// Confere cada peça (config, temas, git, Claude, Docker, Google, rede, WSL) e diz como resolver.
     Doctor,
+    /// Agenda por endereço iCal (.ics): o jeito mais simples de ligar o Google Calendar.
+    Calendar {
+        #[command(subcommand)]
+        cmd: CalendarCmd,
+    },
     /// Conecta serviços externos.
     Auth {
         #[command(subcommand)]
@@ -68,6 +73,17 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum CalendarCmd {
+    /// Guarda um endereço iCal (ou arquivo .ics), depois de conferir que ele abre.
+    /// No Google: Configurações › sua agenda › Integrar agenda › "Endereço secreto no formato iCal".
+    Add { address: String },
+    /// Mostra os endereços guardados (sem a parte secreta).
+    List,
+    /// Esquece um endereço, pelo número mostrado no `list`.
+    Remove { number: usize },
 }
 
 #[derive(Subcommand)]
@@ -126,6 +142,7 @@ fn main() -> Result<()> {
         Some(Cmd::Config { cmd: ConfigCmd::Init }) => config_init(cli.config.unwrap_or_else(|| paths.config_file())),
         Some(Cmd::Auth { cmd: AuthCmd::Google { client_secret } }) => auth_google(cli.config, client_secret, &paths),
         Some(Cmd::Doctor) => doctor::run(cli.config, &paths),
+        Some(Cmd::Calendar { cmd }) => calendar_cmd(cmd, cli.config, &paths),
         Some(Cmd::ShellInit { shell }) => {
             print!("{}", shell::init_script(&shell)?);
             Ok(())
@@ -218,6 +235,54 @@ fn theme_list(paths: &Paths) -> Result<()> {
     }
     for err in &themes.errors {
         eprintln!("ignorado: {err}");
+    }
+    Ok(())
+}
+
+fn calendar_cmd(cmd: CalendarCmd, config_path: Option<PathBuf>, paths: &Paths) -> Result<()> {
+    use providers::calendar::{fetch_ical, ics::describe_address, load_ical_store, normalize_source, save_ical_store};
+    let store = paths.ical_store();
+    let mut list = load_ical_store(&store);
+    match cmd {
+        CalendarCmd::Add { address } => {
+            let address = normalize_source(&address);
+            if list.contains(&address) {
+                println!("esse endereço já está guardado");
+                return Ok(());
+            }
+            let hours = config::load(config_path).config.calendar.lookahead_hours;
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            let (name, events) = rt.block_on(async {
+                let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()?;
+                let now = chrono::Utc::now();
+                fetch_ical(&http, &address, now, now + chrono::Duration::hours(hours)).await
+            })?;
+            list.push(address.clone());
+            save_ical_store(&store, &list)?;
+            let label = if name.is_empty() { describe_address(&address) } else { name };
+            println!("✓ {label}: {} evento(s) nas próximas {hours} h", events.len());
+            if let Some(e) = events.iter().find(|e| !e.all_day) {
+                println!("  próximo: {} ({})", e.title, e.start.with_timezone(&chrono::Local).format("%d/%m %H:%M"));
+            }
+            println!("Guardado em {} (só o seu usuário lê). Um cockpit aberto pega a agenda em até 15 s.", store.display());
+            println!("Quem tiver esse endereço lê a sua agenda; se ele vazar, gere outro no Google em \"Redefinir\".");
+        }
+        CalendarCmd::List => {
+            if list.is_empty() {
+                println!("nenhum endereço guardado (use `cockpit calendar add '<endereço iCal>'`)");
+            }
+            for (i, a) in list.iter().enumerate() {
+                println!("{}  {}", i + 1, describe_address(a));
+            }
+        }
+        CalendarCmd::Remove { number } => {
+            if number == 0 || number > list.len() {
+                bail!("não há o número {number}; veja `cockpit calendar list`");
+            }
+            let a = list.remove(number - 1);
+            save_ical_store(&store, &list)?;
+            println!("removido {}", describe_address(&a));
+        }
     }
     Ok(())
 }

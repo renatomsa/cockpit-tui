@@ -62,7 +62,7 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
     if state.demo_agenda {
         update(&mut state, Action::Calendar(Snapshot::ok(providers::calendar::demo(Utc::now()))));
     } else {
-        providers::calendar::spawn(state.config.calendar.clone(), state.paths.google_token(), cal_tx);
+        providers::calendar::spawn(state.config.calendar.clone(), state.paths.google_token(), state.paths.ical_store(), cal_tx);
     }
     let mut cal_alive = !state.demo_agenda;
     let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive, mut usage_alive, mut specs_alive, mut docker_alive) =

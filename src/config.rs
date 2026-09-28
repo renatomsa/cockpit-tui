@@ -230,6 +230,11 @@ impl Default for ClaudeConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct CalendarConfig {
     pub enabled: bool,
+    /// Endereços iCal (.ics) ou arquivos. Os guardados com `cockpit calendar add` somam a
+    /// estes (e ficam fora do config, porque o endereço secreto dá acesso à agenda).
+    pub ical: Vec<String>,
+    /// De quanto em quanto tempo reler os endereços iCal.
+    pub ical_refresh_secs: u64,
     /// JSON do cliente OAuth "App para computador" baixado do Google Cloud.
     pub client_secret: String,
     /// Agendas mostradas (id ou nome). Vazio = as marcadas como visíveis no Google Calendar.
@@ -255,6 +260,8 @@ impl Default for CalendarConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            ical: Vec::new(),
+            ical_refresh_secs: 300,
             client_secret: "~/.config/cockpit/google_client.json".into(),
             calendars: Vec::new(),
             exclude: Vec::new(),
@@ -395,6 +402,11 @@ impl Paths {
     /// Onde fica o token do Google (fora do config, que costuma ir para dotfiles).
     pub fn google_token(&self) -> PathBuf {
         self.state_dir.join("google_token.json")
+    }
+
+    /// Endereços iCal guardados com `cockpit calendar add` (0600: são segredos).
+    pub fn ical_store(&self) -> PathBuf {
+        self.state_dir.join("calendars.json")
     }
 }
 

@@ -1,6 +1,7 @@
 //! Google Calendar: próximos eventos das agendas visíveis, lidos pela API v3 a cada minuto.
 //! A contagem regressiva e o alerta são recalculados pela UI a cada segundo, sem rede.
 
+pub mod ics;
 pub mod oauth;
 
 use std::{collections::HashSet, path::PathBuf, time::Duration};
@@ -49,23 +50,107 @@ impl Event {
 
 /// Por que não há agenda: cada caso pede uma ação diferente do usuário.
 pub fn not_connected_hint(err: &str) -> bool {
-    err.starts_with("não conectado") || err.starts_with("sem client secret")
+    err.starts_with("não conectado")
 }
 
-pub fn spawn(cfg: CalendarConfig, token_path: PathBuf, tx: watch::Sender<Snapshot<CalendarSnapshot>>) {
+pub fn load_ical_store(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn save_ical_store(path: &std::path::Path, list: &[String]) -> Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    f.write_all(serde_json::to_string_pretty(list)?.as_bytes())?;
+    Ok(())
+}
+
+/// `webcal://` vira `https://`; caminhos com `~` são expandidos.
+pub fn normalize_source(s: &str) -> String {
+    let s = s.trim();
+    match s.strip_prefix("webcal://") {
+        Some(rest) => format!("https://{rest}"),
+        None => s.to_string(),
+    }
+}
+
+/// Baixa (ou lê) e interpreta um endereço iCal.
+pub async fn fetch_ical(http: &reqwest::Client, source: &str, from: DateTime<Utc>, until: DateTime<Utc>) -> Result<(String, Vec<Event>)> {
+    let src = normalize_source(source);
+    let text = if src.starts_with("http://") || src.starts_with("https://") {
+        let resp = http.get(&src).send().await.map_err(|e| anyhow!("{}: {e}", ics::describe_address(&src)))?;
+        if !resp.status().is_success() {
+            bail!("{} respondeu {}", ics::describe_address(&src), resp.status());
+        }
+        resp.text().await?
+    } else {
+        let p = crate::config::expand_home(&src);
+        tokio::fs::read_to_string(&p).await.map_err(|e| anyhow!("{}: {e}", p.display()))?
+    };
+    if !text.contains("BEGIN:VCALENDAR") {
+        bail!("{} não é um arquivo iCal", ics::describe_address(&src));
+    }
+    let owner = ics::owner_from_address(&src);
+    let system: chrono_tz::Tz = iana_time_zone::get_timezone().ok().and_then(|n| n.parse().ok()).unwrap_or(chrono_tz::UTC);
+    let r = tokio::task::spawn_blocking(move || ics::events(&text, from, until, system, owner.as_deref())).await?;
+    Ok(r)
+}
+
+async fn fetch_all_ical(http: &reqwest::Client, cfg: &CalendarConfig, sources: &[String]) -> Result<(CalendarSnapshot, Option<String>)> {
+    let now = Utc::now();
+    let until = now + chrono::Duration::hours(cfg.lookahead_hours.clamp(1, 24 * 14));
+    let mut events = Vec::new();
+    let mut calendars = Vec::new();
+    let mut errors = Vec::new();
+    let mut seen = HashSet::new();
+    for s in sources {
+        match fetch_ical(http, s, now, until).await {
+            Ok((name, evs)) => {
+                calendars.push(if name.is_empty() { ics::describe_address(s) } else { name });
+                for e in evs {
+                    if (cfg.show_declined || !e.declined) && seen.insert(e.key()) {
+                        events.push(e);
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("{e:#}")),
+        }
+    }
+    if calendars.is_empty() {
+        bail!("{}", errors.join("; "));
+    }
+    events.sort_by(|a, b| a.start.cmp(&b.start).then(a.all_day.cmp(&b.all_day).reverse()));
+    let partial = (!errors.is_empty()).then(|| format!("{} de {} agendas falharam: {}", errors.len(), sources.len(), errors.join("; ")));
+    Ok((CalendarSnapshot { events, calendars }, partial))
+}
+
+pub fn spawn(cfg: CalendarConfig, token_path: PathBuf, ical_store: PathBuf, tx: watch::Sender<Snapshot<CalendarSnapshot>>) {
     if !cfg.enabled {
         return;
     }
     tokio::spawn(async move {
         let http = http_client();
+        // Feeds .ics do Google podem ter anos de eventos: prazo maior que o padrão.
+        let ical_http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap_or_else(|_| http.clone());
         let token = RwLock::new(None::<oauth::Token>);
         let mut backoff = Backoff::new(Duration::from_secs(30), Duration::from_secs(600));
-        let every = Duration::from_secs(cfg.refresh_secs.max(30));
         loop {
-            let delay = match fetch(&http, &cfg, &token_path, &token).await {
-                Ok(snap) => {
+            // Relido a cada volta: um `cockpit calendar add` em outro terminal vale sozinho.
+            let mut sources: Vec<String> = cfg.ical.clone();
+            sources.extend(load_ical_store(&ical_store));
+            let result = if sources.is_empty() {
+                fetch(&http, &cfg, &token_path, &token).await.map(|s| (s, None, Duration::from_secs(cfg.refresh_secs.max(30))))
+            } else {
+                fetch_all_ical(&ical_http, &cfg, &sources).await.map(|(s, p)| (s, p, Duration::from_secs(cfg.ical_refresh_secs.max(60))))
+            };
+            let delay = match result {
+                Ok((snap, partial, every)) => {
                     backoff.reset();
-                    tx.send_replace(Snapshot::ok(snap));
+                    let mut out = Snapshot::ok(snap);
+                    out.error = partial;
+                    tx.send_replace(out);
                     every
                 }
                 Err(e) => {
@@ -93,10 +178,11 @@ async fn fetch(
     cache: &RwLock<Option<oauth::Token>>,
 ) -> Result<CalendarSnapshot> {
     let client_path = oauth::client_path(cfg);
-    let client = oauth::load_client(&client_path).map_err(|_| anyhow!("sem client secret em {} (veja o README)", client_path.display()))?;
+    let client = oauth::load_client(&client_path)
+        .map_err(|_| anyhow!("não conectado: rode `cockpit calendar add '<endereço iCal>'` (veja o README)"))?;
     let mut t = match cache.read().await.clone().or_else(|| oauth::load_token(token_path)) {
         Some(t) => t,
-        None => bail!("não conectado: rode `cockpit auth google`"),
+        None => bail!("não conectado: rode `cockpit auth google` (ou use um endereço iCal: `cockpit calendar add`)"),
     };
     if !t.fresh() {
         t = oauth::refresh(http, &client, &t).await?;

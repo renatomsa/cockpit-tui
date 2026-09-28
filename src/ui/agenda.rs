@@ -44,10 +44,10 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     if s.calendar.data.is_none() {
         let lines = match &s.calendar.error {
             Some(e) if not_connected_hint(e) => vec![
-                Line::styled("Google Calendar não conectado.", Style::new().fg(t.fg)),
-                Line::styled(truncate("1. crie o cliente OAuth \"App para computador\" (README, seção Google Calendar)", w), muted),
-                Line::styled(truncate(&format!("2. salve o JSON em {}", s.config.calendar.client_secret), w), muted),
-                Line::styled("3. rode `cockpit auth google`   (para só ver o alerta: `cockpit --demo-agenda`)", muted),
+                Line::styled("Agenda não conectada. No Google Calendar (web):", Style::new().fg(t.fg)),
+                Line::styled(truncate("1. Configurações › sua agenda › Integrar agenda › copie o \"Endereço secreto no formato iCal\"", w), muted),
+                Line::styled(truncate("2. rode  cockpit calendar add '<endereço>'   — um cockpit aberto pega sozinho em até 15 s", w), muted),
+                Line::styled(truncate("sem o endereço (a empresa pode esconder): `cockpit auth google` · só ver o alerta: `cockpit --demo-agenda`", w), muted),
             ],
             Some(e) => vec![Line::styled(truncate(&format!("agenda: {e}"), w), Style::new().fg(t.warn))],
             None if !s.config.calendar.enabled => vec![Line::styled("agenda desligada ([calendar].enabled = false)", muted)],

@@ -70,9 +70,13 @@ usage_limits = true
 usage_refresh_secs = 180
 
 [calendar]
-# Google Calendar. Passo a passo no README (seção Google Calendar); depois rode
-# `cockpit auth google`. O token fica em ~/.local/state/cockpit/google_token.json (0600).
+# Jeito mais simples: o endereço iCal da agenda (Google Calendar › Configurações ›
+# sua agenda › Integrar agenda › "Endereço secreto no formato iCal"), guardado com
+#   cockpit calendar add '<endereço>'
+# Alternativa quando a empresa esconde o endereço: OAuth (`cockpit auth google`, README).
 enabled = true
+ical = []                       # endereços ou arquivos .ics extras (prefira `calendar add`)
+ical_refresh_secs = 300
 client_secret = "~/.config/cockpit/google_client.json"
 calendars = []                  # vazio = as agendas visíveis no Google Calendar
 exclude = []                    # ex.: ["Feriados no Brasil"]

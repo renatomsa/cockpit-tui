@@ -66,7 +66,8 @@ A tecla `i` mostra a legenda dos símbolos do painel em foco.
 | `cockpit doctor` | confere cada peça e diz como resolver o que falta |
 | `cockpit theme list` / `install <arquivo ou URL>` / `remove <nome>` | gerencia temas |
 | `cockpit config init` / `config path` | cria o config / mostra onde ficam config, temas, estado e log |
-| `cockpit auth google` | conecta o Google Calendar |
+| `cockpit calendar add <endereço iCal>` / `list` / `remove <n>` | conecta a agenda pelo endereço iCal |
+| `cockpit auth google` | conecta o Google Calendar por OAuth (alternativa) |
 | `cockpit shell-init zsh\|bash\|fish` | função que faz o Enter trocar de pasta |
 | `cockpit --demo-agenda` | reuniões de exemplo, para ver o alerta sem o Google |
 
@@ -98,14 +99,20 @@ workspaces = ["~"]                # onde procurar repositórios
 
 ## Google Calendar
 
-O acesso é somente leitura (`calendar.readonly`) e usa um cliente OAuth seu:
+O jeito mais simples é o **endereço iCal**. Não precisa de Google Cloud nem de OAuth:
+
+1. No Google Calendar (web), abra **Configurações › sua agenda › Integrar agenda** e copie o **"Endereço secreto no formato iCal"**.
+2. Rode `cockpit calendar add '<endereço>'`. Ele confere o endereço e guarda.
+
+A agenda é relida a cada 5 min. Os eventos recorrentes são expandidos, e ficam de fora os cancelados e os que você recusou; os de dia inteiro aparecem, mas nunca disparam alerta. Vale qualquer feed ou arquivo `.ics`, e dá para cadastrar vários (`calendar list`, `calendar remove <n>`). O endereço fica em `~/.local/state/cockpit/calendars.json`, com permissão 0600, e não no config. Quem tiver o endereço lê a sua agenda: se ele vazar, gere outro no Google.
+
+**Se a empresa esconder o endereço secreto** (o Workspace pode desligar essa opção), use o OAuth, que é somente leitura:
 
 1. Em [console.cloud.google.com](https://console.cloud.google.com), crie um projeto e ative a **Google Calendar API**.
-2. Em **Google Auth Platform → Público-alvo**, escolha **Interno** para uma conta Workspace. Para uma conta pessoal, escolha **Externo** e adicione o seu e-mail como usuário de teste.
-3. Em **Clientes → Criar cliente**, escolha **App para computador** e baixe o JSON para `~/.config/cockpit/google_client.json`.
-4. Rode `cockpit auth google` e autorize no navegador.
+2. Em **Google Auth Platform**, configure o público-alvo como **Interno** e crie um cliente **App para computador**. Baixe o JSON para `~/.config/cockpit/google_client.json`.
+3. Rode `cockpit auth google`.
 
-O token fica em `~/.local/state/cockpit/google_token.json`, com permissão 0600, e se renova sozinho.
+A leitura do `.ics` segue a abordagem do [meridian](https://github.com/victorlcampos/meridian) (MIT).
 
 ## Privacidade e custo
 
