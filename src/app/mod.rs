@@ -70,6 +70,27 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
     // Resultados de efeitos (ex.: o kill) voltam como ações.
     let (act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
 
+    // Recarga a quente: config.toml e a pasta de temas.
+    let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(1);
+    let config_name = state.config_path.file_name().map(|n| n.to_os_string());
+    let mut cfg_watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res
+            && providers::is_change(&ev)
+            && ev.paths.iter().any(|p| p.extension().is_some_and(|x| x == "toml") || p.file_name().map(|n| n.to_os_string()) == config_name)
+        {
+            let _ = cfg_tx.try_send(());
+        }
+    })
+    .map_err(|e| tracing::warn!("sem recarga a quente: {e}"))
+    .ok();
+    if let Some(w) = cfg_watcher.as_mut() {
+        use notify::Watcher;
+        let _ = std::fs::create_dir_all(state.paths.themes_dir());
+        for dir in [state.config_path.parent().map(|p| p.to_path_buf()), Some(state.paths.themes_dir())].into_iter().flatten() {
+            let _ = w.watch(&dir, notify::RecursiveMode::NonRecursive);
+        }
+    }
+
     let mut terminal = ratatui::init();
     let mut events = EventStream::new();
     let mut redraw = true;
@@ -135,6 +156,23 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 Ok(()) => Action::Weather(wx_rx.borrow_and_update().clone()),
                 Err(_) => { wx_alive = false; continue }
             },
+            Some(()) = cfg_rx.recv() => {
+                // Editores salvam em várias escritas: espera assentar e relê fora do loop.
+                let (path, themes_dir, truecolor, tx) = (state.config_path.clone(), state.paths.themes_dir(), state.truecolor, act_tx.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let r = tokio::task::spawn_blocking(move || update::Reloaded {
+                        config: crate::config::load(Some(path)),
+                        themes: crate::theme::ThemeRegistry::load(&themes_dir, truecolor),
+                    })
+                    .await;
+                    if let Ok(r) = r {
+                        let _ = tx.send(Action::Reloaded(Box::new(r)));
+                    }
+                });
+                while cfg_rx.try_recv().is_ok() {}
+                continue;
+            }
             Some(a) = act_rx.recv() => a,
         };
 

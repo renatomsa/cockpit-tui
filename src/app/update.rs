@@ -41,8 +41,16 @@ pub enum Action {
     HostNet(Snapshot<HostNet>),
     Weather(Snapshot<Weather>),
     Speed(SpeedEvent),
+    /// Config e temas relidos do disco (o arquivo mudou).
+    Reloaded(Box<Reloaded>),
     /// Mensagem para a barra de status (ex.: resultado de um efeito).
     Notice(String),
+}
+
+#[derive(Debug)]
+pub struct Reloaded {
+    pub config: crate::config::Loaded,
+    pub themes: crate::theme::ThemeRegistry,
 }
 
 /// Efeito colateral pedido pelo `update`, executado pelo loop fora da thread de desenho.
@@ -115,6 +123,25 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
                 .and_then(|id| list.iter().position(|x| x.id == id))
                 .unwrap_or(s.sess_sel)
                 .min(list.len().saturating_sub(1));
+            Outcome::redraw()
+        }
+        Action::Reloaded(r) => {
+            let Reloaded { config, themes } = *r;
+            s.apply_themes(themes);
+            match config.warning {
+                // Config com erro não é aplicado: fica o que estava rodando.
+                Some(w) => s.notices.insert(0, format!("{} (mantive o config anterior)", w.replace(", usando defaults", ""))),
+                None => {
+                    let restart = s.apply_config(config.config);
+                    let msg = if restart.is_empty() {
+                        "config recarregado".to_string()
+                    } else {
+                        format!("config recarregado; {} vale{} ao reabrir o cockpit", restart.join(" "), if restart.len() == 1 { "" } else { "m" })
+                    };
+                    s.notices.insert(0, msg);
+                }
+            }
+            s.notices.truncate(5);
             Outcome::redraw()
         }
         Action::HostNet(snap) => {
@@ -929,6 +956,27 @@ mod tests {
         let r = SpeedResult { down_mbps: 41.0, up_mbps: 21.0, at: s.now };
         update(&mut s, Action::Speed(SpeedEvent::Done(r.clone())));
         assert_eq!((s.speed.running, s.speed.last.clone()), (None, Some(r)));
+    }
+
+    #[test]
+    fn reload_applies_live_settings_and_flags_the_rest() {
+        let mut s = state();
+        let mut cfg = s.config.clone();
+        cfg.theme = "nord".into();
+        cfg.calendar.alert_minutes = 2; // vale na hora
+        cfg.worktrees.depth = 5; // só ao reabrir
+        let themes = ThemeRegistry::load(&PathBuf::from("/nao/existe"), true);
+        let loaded = crate::config::Loaded { config: cfg, path: "/x/config.toml".into(), warning: None };
+        update(&mut s, Action::Reloaded(Box::new(Reloaded { config: loaded, themes })));
+        assert_eq!(s.theme().name, "nord");
+        assert_eq!(s.config.calendar.alert_minutes, 2);
+        assert!(s.notices[0].contains("[worktrees]"), "{}", s.notices[0]);
+        // config com erro: mantém o anterior
+        let themes = ThemeRegistry::load(&PathBuf::from("/nao/existe"), true);
+        let bad = crate::config::Loaded { config: Config::default(), path: "/x".into(), warning: Some("config inválido".into()) };
+        update(&mut s, Action::Reloaded(Box::new(Reloaded { config: bad, themes })));
+        assert_eq!(s.config.worktrees.depth, 5);
+        assert!(s.notices[0].contains("mantive"));
     }
 
     #[test]

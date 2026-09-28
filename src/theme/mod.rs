@@ -146,6 +146,68 @@ pub fn truecolor_supported() -> bool {
         || env("TERM").contains("alacritty")
 }
 
+pub fn is_builtin(name: &str) -> bool {
+    BUILTIN.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+}
+
+/// Link de arquivo no GitHub (`/blob/`) vira o endereço do conteúdo cru.
+pub fn raw_url(url: &str) -> String {
+    match url.strip_prefix("https://github.com/") {
+        Some(rest) if rest.contains("/blob/") => format!("https://raw.githubusercontent.com/{}", rest.replacen("/blob/", "/", 1)),
+        _ => url.to_string(),
+    }
+}
+
+/// Nome de arquivo seguro: minúsculas, dígitos, `-` e `_`.
+fn slug(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    s.trim_matches('-').to_string()
+}
+
+pub struct Installed {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    /// Substitui um tema embutido de mesmo nome.
+    pub overrides_builtin: bool,
+}
+
+/// Valida o TOML de um tema e grava em `dir/<nome>.toml`, mantendo o texto original
+/// (comentários inclusive). O nome vem do campo `name` ou, sem ele, de `fallback_name`.
+pub fn install(src: &str, fallback_name: &str, dir: &Path, force: bool) -> Result<Installed> {
+    let theme = Theme::parse(src, fallback_name).context("não é um tema válido")?;
+    let name = slug(&theme.name);
+    if name.is_empty() {
+        return Err(anyhow!("o tema não tem nome; ponha `name = \"…\"` no arquivo"));
+    }
+    let path = dir.join(format!("{name}.toml"));
+    if path.exists() && !force {
+        return Err(anyhow!("{} já existe; use --force para substituir", path.display()));
+    }
+    fs::create_dir_all(dir)?;
+    fs::write(&path, src).with_context(|| format!("gravar {}", path.display()))?;
+    Ok(Installed { overrides_builtin: is_builtin(&name), name, path })
+}
+
+/// Remove um tema instalado (os embutidos não saem).
+pub fn remove(name: &str, dir: &Path) -> Result<std::path::PathBuf> {
+    let path = dir.join(format!("{}.toml", slug(name)));
+    if !path.exists() {
+        return Err(if is_builtin(name) {
+            anyhow!("`{name}` é embutido e não pode ser removido")
+        } else {
+            anyhow!("não há tema instalado chamado `{name}` em {}", dir.display())
+        });
+    }
+    fs::remove_file(&path)?;
+    Ok(path)
+}
+
+#[derive(Debug)]
 pub struct ThemeEntry {
     pub theme: Theme,
     pub builtin: bool,
@@ -153,6 +215,7 @@ pub struct ThemeEntry {
 
 /// Temas disponíveis, em ordem estável: embutidos primeiro, depois os do usuário.
 /// Um tema do usuário com o mesmo nome de um embutido o substitui.
+#[derive(Debug)]
 pub struct ThemeRegistry {
     pub entries: Vec<ThemeEntry>,
     pub errors: Vec<String>,
@@ -246,6 +309,34 @@ mod tests {
         assert_eq!(to_256(Color::Rgb(0, 0, 0)), Color::Indexed(16));
         assert_eq!(to_256(Color::Rgb(0x80, 0x80, 0x80)), Color::Indexed(244));
         assert_eq!(to_256(Color::Red), Color::Red);
+    }
+
+    #[test]
+    fn installs_validates_and_removes() {
+        let dir = std::env::temp_dir().join(format!("cockpit-install-{}", std::process::id()));
+        let src = "# meu tema\nname = \"Meu Tema!\"\n[colors]\nbg = \"#101010\"\n";
+        let i = install(src, "x", &dir, false).unwrap();
+        assert_eq!(i.name, "meu-tema");
+        assert!(!i.overrides_builtin);
+        assert_eq!(fs::read_to_string(&i.path).unwrap(), src, "mantém o texto original");
+        assert!(install(src, "x", &dir, false).is_err(), "sem --force não sobrescreve");
+        assert!(install(src, "x", &dir, true).is_ok());
+        assert!(install("[colors]\nbg = \"verde-limão\"", "ruim", &dir, false).is_err());
+        let d = install("[colors]\nbg = \"#000000\"", "dracula", &dir, false).unwrap();
+        assert!(d.overrides_builtin, "sem `name`, usa o nome do arquivo");
+        remove("meu-tema", &dir).unwrap();
+        assert!(remove("meu-tema", &dir).is_err());
+        assert!(remove("nord", &dir).unwrap_err().to_string().contains("embutido"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn github_links_become_raw() {
+        assert_eq!(
+            raw_url("https://github.com/dracula/x/blob/main/themes/a.toml"),
+            "https://raw.githubusercontent.com/dracula/x/main/themes/a.toml"
+        );
+        assert_eq!(raw_url("https://example.com/a.toml"), "https://example.com/a.toml");
     }
 
     #[test]

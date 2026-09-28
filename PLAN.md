@@ -1,5 +1,7 @@
 # Plano — `cockpit`: TUI de cockpit do desenvolvedor (Rust)
 
+> **Estado:** F0 a F5 entregues (veja o README). Este documento registra o desenho original; o que mudou no caminho está nos commits.
+
 ## Contexto
 
 Você quer ficar o dia inteiro no terminal, com um painel fixo que junte o que hoje fica espalhado: hora e cidade, próximas reuniões do Google Calendar (com **alerta vermelho** quando uma reunião se aproxima, como no print), a saúde da máquina (um htop enxuto que **pisca em vermelho** quando a máquina ameaça travar), as **worktrees do Claude** dos projetos, com seletor que dá `cd`, e as **conversas do Claude em aberto**. Tem que ser customizável (temas instaláveis: dracula etc.) e consumir quase nada de CPU.

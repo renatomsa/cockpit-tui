@@ -2,6 +2,7 @@ mod alert;
 mod app;
 mod config;
 mod danger;
+mod doctor;
 mod locale;
 mod platform;
 mod providers;
@@ -49,6 +50,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ThemeCmd,
     },
+    /// Confere cada peça (config, temas, git, Claude, Docker, Google, rede, WSL) e diz como resolver.
+    Doctor,
     /// Conecta serviços externos.
     Auth {
         #[command(subcommand)]
@@ -81,6 +84,16 @@ enum AuthCmd {
 enum ThemeCmd {
     /// Lista os temas disponíveis.
     List,
+    /// Instala um tema a partir de um arquivo .toml ou de uma URL (links do GitHub valem).
+    Install {
+        /// Caminho ou URL do .toml
+        source: String,
+        /// Substitui um tema instalado com o mesmo nome.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove um tema instalado.
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -97,6 +110,12 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Some(Cmd::Theme { cmd: ThemeCmd::List }) => theme_list(&paths),
+        Some(Cmd::Theme { cmd: ThemeCmd::Install { source, force } }) => theme_install(&source, force, &paths),
+        Some(Cmd::Theme { cmd: ThemeCmd::Remove { name } }) => {
+            let p = theme::remove(&name, &paths.themes_dir())?;
+            println!("removido {}", p.display());
+            Ok(())
+        }
         Some(Cmd::Config { cmd: ConfigCmd::Path }) => {
             println!("config  {}", cli.config.unwrap_or_else(|| paths.config_file()).display());
             println!("temas   {}", paths.themes_dir().display());
@@ -106,6 +125,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Config { cmd: ConfigCmd::Init }) => config_init(cli.config.unwrap_or_else(|| paths.config_file())),
         Some(Cmd::Auth { cmd: AuthCmd::Google { client_secret } }) => auth_google(cli.config, client_secret, &paths),
+        Some(Cmd::Doctor) => doctor::run(cli.config, &paths),
         Some(Cmd::ShellInit { shell }) => {
             print!("{}", shell::init_script(&shell)?);
             Ok(())
@@ -123,9 +143,10 @@ fn run(
 ) -> Result<()> {
     let _log_guard = init_logging(&paths);
     let loaded = config::load(config_path);
-    let mut notices: Vec<String> = loaded.warning.into_iter().collect();
+    let mut notices: Vec<String> = loaded.warning.clone().into_iter().collect();
+    let truecolor = theme::truecolor_supported();
 
-    let themes = ThemeRegistry::load(&paths.themes_dir(), theme::truecolor_supported());
+    let themes = ThemeRegistry::load(&paths.themes_dir(), truecolor);
     notices.extend(themes.errors.iter().map(|e| format!("tema ignorado: {e}")));
 
     // Prioridade: --theme > último escolhido com `t` > config.
@@ -146,7 +167,10 @@ fn run(
     }
 
     tracing::info!(config = %loaded.path.display(), "iniciando");
+    let config_path = loaded.path.clone();
     let mut state = AppState::new(loaded.config, paths, themes, theme_idx, notices);
+    state.config_path = config_path;
+    state.truecolor = truecolor;
     state.has_cd_file = cd_file.is_some();
     state.demo_agenda = demo_agenda;
     state.launcher = terminal::detect(&state.config.terminal.new_tab);
@@ -195,6 +219,33 @@ fn theme_list(paths: &Paths) -> Result<()> {
     for err in &themes.errors {
         eprintln!("ignorado: {err}");
     }
+    Ok(())
+}
+
+fn theme_install(source: &str, force: bool, paths: &Paths) -> Result<()> {
+    let (text, fallback) = if source.starts_with("http://") || source.starts_with("https://") {
+        let url = theme::raw_url(source);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let text = rt.block_on(async {
+            let resp = providers::http_client().get(&url).send().await?.error_for_status()?;
+            if resp.content_length().is_some_and(|n| n > 256 * 1024) {
+                bail!("arquivo grande demais para ser um tema");
+            }
+            Ok::<_, anyhow::Error>(resp.text().await?)
+        })?;
+        let stem = url.rsplit('/').next().unwrap_or("tema").trim_end_matches(".toml").to_string();
+        (text, stem)
+    } else {
+        let p = PathBuf::from(source);
+        let text = fs::read_to_string(&p).with_context(|| format!("não li {}", p.display()))?;
+        (text, p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "tema".into()))
+    };
+    let i = theme::install(&text, &fallback, &paths.themes_dir(), force)?;
+    println!("instalado {} → {}", i.name, i.path.display());
+    if i.overrides_builtin {
+        println!("(substitui o tema embutido de mesmo nome)");
+    }
+    println!("Num cockpit aberto ele aparece na hora: aperte `t` até chegar nele, ou ponha theme = \"{}\" no config.", i.name);
     Ok(())
 }
 

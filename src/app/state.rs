@@ -149,6 +149,9 @@ pub struct AppState {
     pub host_net: Snapshot<HostNet>,
     pub weather: Snapshot<Weather>,
     pub speed: SpeedState,
+    /// Arquivo de config em uso (a recarga a quente observa ele).
+    pub config_path: PathBuf,
+    pub truecolor: bool,
     pub docker_sel: usize,
     /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
@@ -208,6 +211,8 @@ impl AppState {
             host_net: Snapshot::default(),
             weather: Snapshot::default(),
             speed: SpeedState::default(),
+            config_path: PathBuf::new(),
+            truecolor: true,
             docker_sel: 0,
             wt_sessions: HashMap::new(),
             wt_sel: 0,
@@ -236,6 +241,56 @@ impl AppState {
             (Panel::Worktrees, WtTab::Claude) => Panel::Sessions,
             (p, _) => p,
         }
+    }
+
+    /// Aplica um config relido do disco. Devolve as seções que só valem ao reabrir
+    /// (lidas pelos providers na partida).
+    pub fn apply_config(&mut self, new: Config) -> Vec<&'static str> {
+        let old = &self.config;
+        let d = |x: &dyn std::fmt::Debug| format!("{x:?}");
+        let mut restart = Vec::new();
+        let checks: [(&'static str, bool); 7] = [
+            ("[system]", d(&old.system) != d(&new.system)),
+            ("[worktrees]", d(&old.worktrees) != d(&new.worktrees)),
+            ("[location]", d(&old.location) != d(&new.location)),
+            ("[network]", d(&old.network) != d(&new.network)),
+            (
+                "[claude]",
+                (&old.claude.dir, old.claude.usage_limits, old.claude.usage_refresh_secs, old.claude.recent_hours, old.claude.recent_max)
+                    != (&new.claude.dir, new.claude.usage_limits, new.claude.usage_refresh_secs, new.claude.recent_hours, new.claude.recent_max),
+            ),
+            (
+                "[calendar]",
+                d(&(&old.calendar.enabled, &old.calendar.client_secret, &old.calendar.calendars, &old.calendar.exclude, old.calendar.refresh_secs, old.calendar.lookahead_hours, old.calendar.show_declined))
+                    != d(&(&new.calendar.enabled, &new.calendar.client_secret, &new.calendar.calendars, &new.calendar.exclude, new.calendar.refresh_secs, new.calendar.lookahead_hours, new.calendar.show_declined)),
+            ),
+            ("[weather]", (old.weather.enabled, old.weather.refresh_minutes) != (new.weather.enabled, new.weather.refresh_minutes)),
+        ];
+        for (name, changed) in checks {
+            if changed {
+                restart.push(name);
+            }
+        }
+        // Tema trocado no config vence o último escolhido com `t`.
+        if !new.theme.eq_ignore_ascii_case(&old.theme)
+            && let Some(i) = self.themes.index_of(&new.theme)
+        {
+            self.theme_idx = i;
+        }
+        let (clocks, bad) = new.extra_clocks();
+        self.extra_clocks = clocks;
+        self.notices.extend(bad);
+        self.config = new;
+        self.recompute_tz();
+        restart
+    }
+
+    /// Troca a lista de temas mantendo o tema atual (pelo nome), se ele ainda existir.
+    pub fn apply_themes(&mut self, themes: ThemeRegistry) {
+        let current = self.theme().name.clone();
+        self.theme_idx = themes.index_of(&current).or_else(|| themes.index_of(&self.config.theme)).unwrap_or(0);
+        self.notices.extend(themes.errors.iter().map(|e| format!("tema ignorado: {e}")));
+        self.themes = themes;
     }
 
     pub fn theme(&self) -> &Theme {

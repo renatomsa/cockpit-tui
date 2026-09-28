@@ -13,7 +13,7 @@ A arquitetura e o roadmap estão em [`PLAN.md`](PLAN.md).
 | F2 | Worktrees + sessões do Claude + seletor com `cd` | ✅ |
 | F3 | Google Calendar (OAuth2) + alerta vermelho | ✅ |
 | F4 | Wi-Fi do host (WSL), speedtest, clima, mapa | ✅ |
-| F5 | `theme install`, hot-reload, `doctor` | — |
+| F5 | `theme install`, hot-reload, `doctor` | ✅ |
 
 ## Instalar e rodar
 
@@ -53,13 +53,27 @@ Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 | `?` | ajuda |
 | `q` / `Ctrl+C` | sai |
 
-Outros comandos: `cockpit theme list`, `cockpit config path`, `cockpit --theme nord`, `cockpit auth google`, `cockpit --demo-agenda`.
+Outros comandos:
+
+| Comando | O que faz |
+|---|---|
+| `cockpit doctor` | confere cada peça (config, temas, shell, git, Claude, Docker, Google, rede, WSL) e diz como resolver o que falta |
+| `cockpit theme list` | temas embutidos e instalados |
+| `cockpit theme install <arquivo ou URL>` | valida e instala um tema (links do GitHub valem); `--force` substitui |
+| `cockpit theme remove <nome>` | remove um tema instalado |
+| `cockpit config init` / `config path` | cria o config comentado / mostra onde ficam config, temas, estado e log |
+| `cockpit auth google` | conecta o Google Calendar |
+| `cockpit shell-init zsh\|bash\|fish` | função que faz o Enter trocar de pasta |
+| `cockpit --demo-agenda` | reuniões de exemplo, para ver o alerta sem o Google |
+| `cockpit --theme nord` | tema só nesta execução |
+
+O config e os temas são **recarregados sozinhos** quando você salva o arquivo. Tema, relógio, layout, idioma e tempos do alerta mudam na hora. As seções lidas na abertura (`[system]`, `[worktrees]`, `[location]`, `[network]`, `[claude]`, `[weather]` e a busca do `[calendar]`) mostram um aviso de que valem ao reabrir. Um config com erro não é aplicado: o cockpit mantém o anterior e mostra a linha do problema.
 
 ## Temas
 
 Embutidos: `dracula`, `catppuccin-mocha`, `tokyo-night`, `nord`, `gruvbox-dark`, `one-dark`, `solarized-dark` e `terminal` (só cores ANSI, segue o tema do seu terminal).
 
-Para criar ou instalar um tema, coloque um `.toml` em `~/.config/cockpit/themes/`. Tokens ausentes herdam de outros, e um arquivo com o mesmo `name` de um embutido o substitui:
+Para instalar um tema, use `cockpit theme install <arquivo ou URL>`, que valida as cores antes de copiar, ou coloque um `.toml` em `~/.config/cockpit/themes/`. Num cockpit aberto, ele aparece na hora no ciclo do `t`. Tokens ausentes herdam de outros, e um arquivo com o mesmo `name` de um embutido o substitui:
 
 ```toml
 name = "meu-tema"

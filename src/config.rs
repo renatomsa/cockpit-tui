@@ -350,6 +350,7 @@ impl Config {
 }
 
 /// Resultado do carregamento: um config com erro não derruba o app, vira aviso na barra.
+#[derive(Debug)]
 pub struct Loaded {
     pub config: Config,
     pub path: PathBuf,
