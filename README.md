@@ -81,10 +81,11 @@ Em terminal sem truecolor, as cores são convertidas para a paleta de 256. O Win
 No topo do painel Sistema ficam duas caixas:
 - **CPU:** barra empilhada por tipo de uso (usuário, sistema, nice, espera de E/S, steal) com legenda, tempo ocioso, temperatura quando há sensor (no WSL não há), carga de 1, 5 e 15 min com o percentual sobre os núcleos, e o total de processos e threads.
 - **Memória:** barra empilhada com apps (memória dos programas), kernel, compartilhada, comprimida (zswap) e cache de arquivos, o quanto está em uso, a pressão (baixa, média ou alta, pelo PSI), livre, disponível e swap.
+- **Disco:** uma barra por volume (`/`, `/mnt/c`…), com percentual e espaço livre, e a leitura e a escrita em disco do momento, somando os discos do Linux.
 
 Embaixo das caixas, o painel mostra pressão (PSI), discos, rede da interface da rota padrão, ping e os maiores ofensores de CPU e memória, agrupados por nome.
 
-| Métrica | Amarelo | Vermelho piscando |
+| Métrica | Amarelo | Vermelho em negrito |
 |---|---|---|
 | Memória | > 85 % | > 93 % |
 | Swap (o amarelo só entra se ela estiver subindo) | > 50 % | > 80 % |
@@ -92,7 +93,7 @@ Embaixo das caixas, o painel mostra pressão (PSI), discos, rede da interface da
 | CPU média de 10 s | > 90 % | > 98 % |
 | Disco | > 90 % | > 97 % |
 
-No vermelho, a métrica e os maiores ofensores piscam, a borda do painel fica vermelha e o motivo aparece também na barra de status, que continua visível no modo compacto. Para baixar, o valor precisa cair 3 pontos abaixo do limiar, o que evita pisca-pisca. Tudo isso é configurável em `[system.danger]`.
+No vermelho, a métrica e os maiores ofensores ficam em vermelho negrito (sem piscar: o pisca é só do alerta de reunião), a borda do painel fica vermelha e o motivo aparece também na barra de status, que continua visível no modo compacto. Para baixar, o valor precisa cair 3 pontos abaixo do limiar, o que evita pisca-pisca. Tudo isso é configurável em `[system.danger]`.
 
 No rodapé do painel fica o bloco MÁQUINA: sistema operacional, processador, núcleos físicos e threads, placa de vídeo e memória. No WSL, o Linux só enxerga a VM. Por isso os números vêm da máquina real, lidos uma vez do Windows pelo PowerShell na abertura, e o que o WSL recebe aparece entre parênteses, como em `8 threads (WSL usa 6)`. No Linux nativo, a placa de vídeo vem do `nvidia-smi` ou do `lspci`.
 

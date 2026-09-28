@@ -9,7 +9,11 @@ use ratatui::{
     widgets::{Block, BorderType, Padding, Paragraph},
 };
 
-use super::system::{bytes, level_style};
+use super::{
+    pad,
+    system::{bytes, gauge_color, level_style},
+    truncate,
+};
 use crate::{
     app::state::AppState,
     config::Locale,
@@ -26,10 +30,9 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, d: &SystemSnapshot) -> u16 
     let cpu = cpu_lines(s, d, inner_w);
     let mem = mem_lines(s, d, inner_w);
     let t = s.theme();
-    let blink = s.blink_on();
 
-    let cpu_box = boxed(t, "CPU", d.cpu as f64, d.danger.cpu, blink);
-    let mem_box = boxed(t, "Memória", d.mem_pct(), d.danger.memory_pressure(), blink);
+    let cpu_box = boxed(t, "CPU", d.cpu as f64, d.danger.cpu);
+    let mem_box = boxed(t, "Memória", d.mem_pct(), d.danger.memory_pressure());
     if side_by_side {
         let h = (cpu.len().max(mem.len()) as u16 + 2).min(area.height);
         let [a, _, b] = Layout::horizontal([Constraint::Length(box_w), Constraint::Length(1), Constraint::Length(box_w)])
@@ -47,13 +50,82 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, d: &SystemSnapshot) -> u16 
     }
 }
 
-fn boxed(t: &Theme, title: &'static str, pct: f64, lvl: Level, blink: bool) -> Block<'static> {
+/// Caixa Disco, na largura toda: uma barra por volume e a E/S do momento.
+pub fn draw_disk(f: &mut Frame, area: Rect, s: &AppState, d: &SystemSnapshot) -> u16 {
+    if d.disks.is_empty() || area.height < 3 {
+        return 0;
+    }
+    let t = s.theme();
+    let loc = s.config.locale;
+    let muted = Style::new().fg(t.muted);
+    let fg = Style::new().fg(t.fg);
+    let w = area.width.saturating_sub(4) as usize;
+
+    let mount_w = d.disks.iter().map(|x| x.mount.chars().count()).max().unwrap_or(1).min(12);
+    let details: Vec<(String, String)> = d.disks.iter().map(|x| (size(x.total - x.used, loc), size(x.total, loc))).collect();
+    let free_w = details.iter().map(|(f, _)| f.chars().count()).max().unwrap_or(4);
+    let total_w = details.iter().map(|(_, t)| t.chars().count()).max().unwrap_or(4);
+    // "892G livres de 1007G", alinhado entre as linhas
+    let detail_w = free_w + " livres de ".len() + total_w;
+    let show_detail = w >= mount_w + 2 + 12 + 6 + detail_w;
+    let bar_w = w.saturating_sub(mount_w + 2 + 6 + if show_detail { detail_w + 2 } else { 0 }).max(6);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (disk, (free, total)) in d.disks.iter().zip(&details) {
+        let lvl = d.danger.disks.get(&disk.mount).copied().unwrap_or_default();
+        let pct = disk.pct();
+        let used_cells = ((pct.clamp(0.0, 100.0) / 100.0) * bar_w as f64).round() as usize;
+        let mut spans = vec![
+            Span::styled(pad(&truncate(&disk.mount, mount_w), mount_w + 2), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+            Span::styled("█".repeat(used_cells), Style::new().fg(gauge_color(t, pct, lvl))),
+            Span::styled("█".repeat(bar_w - used_cells), Style::new().fg(t.border)),
+            Span::styled(format!(" {pct:>3.0}%"), if lvl == Level::Ok { fg.add_modifier(Modifier::BOLD) } else { level_style(t, lvl) }),
+        ];
+        if show_detail {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(format!("{free:>free_w$}"), fg));
+            spans.push(Span::styled(" livres de ", muted));
+            spans.push(Span::styled(format!("{total:>total_w$}"), fg));
+        }
+        lines.push(Line::from(spans));
+    }
+    if let Some(io) = d.disk_io {
+        let rate = |b: f64| format!("{}/s", size(b as u64, loc));
+        let items = [(t.spark, "leitura", rate(io.read)), (t.highlight, "escrita", rate(io.write))];
+        let mut l = legend(t, &items, w);
+        if let Some(first) = l.first_mut()
+            && first.width() + 22 <= w
+        {
+            first.spans.push(Span::styled("   (discos do Linux)", muted));
+        }
+        lines.extend(l);
+    }
+
+    let worst = d.danger.disk();
+    let border = match worst {
+        Level::Critical => t.alert,
+        Level::Warn => t.warn,
+        Level::Ok => t.border,
+    };
+    let n = d.disks.len();
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(border))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(" Disco ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))
+        .title_top(Line::from(Span::styled(format!(" {n} volume{} ", if n == 1 { "" } else { "s" }), muted)).right_aligned());
+    let h = (lines.len() as u16 + 2).min(area.height);
+    f.render_widget(Paragraph::new(lines).block(block), Rect { height: h, ..area });
+    h
+}
+
+fn boxed(t: &Theme, title: &'static str, pct: f64, lvl: Level) -> Block<'static> {
     let border = match lvl {
         Level::Critical => t.alert,
         Level::Warn => t.warn,
         Level::Ok => t.border,
     };
-    let pct_style = if lvl == Level::Ok { Style::new().fg(t.fg).add_modifier(Modifier::BOLD) } else { level_style(t, lvl, blink) };
+    let pct_style = if lvl == Level::Ok { Style::new().fg(t.fg).add_modifier(Modifier::BOLD) } else { level_style(t, lvl) };
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(border))
@@ -241,7 +313,7 @@ fn mem_lines(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<Line<'static>> {
     match d.swap_pct() {
         Some(p) => out.push(Line::from(vec![
             Span::styled("swap ", muted),
-            Span::styled(size(d.swap_used, loc), if d.danger.swap > Level::Ok { level_style(t, d.danger.swap, s.blink_on()) } else { fg }),
+            Span::styled(size(d.swap_used, loc), if d.danger.swap > Level::Ok { level_style(t, d.danger.swap) } else { fg }),
             Span::styled(format!(" de {} ({p:.0}%)", size(d.swap_total, loc)), muted),
         ])),
         None => out.push(Line::styled("sem swap", muted)),

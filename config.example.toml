@@ -35,7 +35,7 @@ ping_interval_secs = 5
 disks = []                    # vazio = automático; ex.: ["/", "/mnt/c"]
 top_n = 5                     # processos em cada lista de ofensores
 
-# Detector de travamento. Amarelo acima de *_warn; vermelho piscando acima de *_crit.
+# Detector de travamento. Amarelo acima de *_warn; vermelho em negrito acima de *_crit.
 [system.danger]
 mem_warn = 85.0
 mem_crit = 93.0

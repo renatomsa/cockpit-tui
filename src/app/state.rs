@@ -8,7 +8,6 @@ use chrono_tz::Tz;
 
 use crate::{
     config::{Config, Paths},
-    danger::Level,
     providers::{
         Snapshot,
         calendar::{CalendarSnapshot, Event},
@@ -230,10 +229,9 @@ impl AppState {
         self.now.timestamp_subsec_millis() < 500
     }
 
-    /// Algo na tela pisca e precisa de tick de meio segundo.
+    /// Algo na tela pisca e precisa de tick de meio segundo (só o alerta de reunião).
     pub fn animating(&self) -> bool {
-        self.system.data.as_ref().is_some_and(|d| d.danger.worst() == Level::Critical)
-            || self.alert().level == crate::alert::Level::Imminent
+        self.alert().level == crate::alert::Level::Imminent
     }
 
     pub fn events(&self) -> &[Event] {

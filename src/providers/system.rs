@@ -44,6 +44,15 @@ pub struct SystemSnapshot {
     /// Temperatura da CPU em °C, quando há sensor (no WSL não há).
     pub temp_c: Option<f64>,
     pub mem_parts: Option<MemParts>,
+    /// Leitura e escrita em disco agora (discos inteiros de /proc/diskstats).
+    pub disk_io: Option<DiskIo>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DiskIo {
+    /// Bytes por segundo.
+    pub read: f64,
+    pub write: f64,
 }
 
 /// Percentuais do tempo de CPU por tipo (somam ~100).
@@ -151,6 +160,7 @@ fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
     let mut eval = Evaluator::new(cfg.danger.clone());
     let mut net = NetCounter::default();
     let mut last_stat: Option<[u64; 8]> = None;
+    let mut last_io: Option<(Instant, u64, u64)> = None;
     let mut snap = SystemSnapshot::default();
     // Sem `without_tasks` o sysinfo lista cada thread como processo (libuv-worker ×16…).
     // O exe é lido uma vez por processo: dá nome melhor que o `comm` ("MainThread", 15 chars).
@@ -185,6 +195,14 @@ fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
         }
         snap.threads = fs::read_to_string("/proc/loadavg").ok().and_then(|s| parse_loadavg_threads(&s));
         snap.mem_parts = fs::read_to_string("/proc/meminfo").ok().and_then(|s| parse_meminfo(&s));
+        if let Some((r, w)) = fs::read_to_string("/proc/diskstats").ok().map(|s| parse_diskstats(&s, is_whole_disk)) {
+            let now = Instant::now();
+            if let Some((t, pr, pw)) = last_io {
+                let dt = now.duration_since(t).as_secs_f64().max(0.001);
+                snap.disk_io = Some(DiskIo { read: r.saturating_sub(pr) as f64 / dt, write: w.saturating_sub(pw) as f64 / dt });
+            }
+            last_io = Some((now, r, w));
+        }
         snap.net = net.sample();
 
         // Processos no mesmo ritmo da CPU global: o sysinfo calcula o % de cada processo
@@ -322,6 +340,27 @@ fn cpu_parts(prev: &[u64; 8], now: &[u64; 8]) -> Option<CpuParts> {
         iowait: pct(d[4]),
         steal: pct(d[7]),
     })
+}
+
+/// Disco inteiro (não partição, loop, ram ou device-mapper): só esses entram na soma
+/// de E/S, senão a mesma escrita contaria duas vezes.
+fn is_whole_disk(name: &str) -> bool {
+    ["sd", "nvme", "vd", "xvd", "mmcblk", "hd"].iter().any(|p| name.starts_with(p)) && Path::new("/sys/block").join(name).exists()
+}
+
+/// Bytes lidos e escritos desde o boot, somando os discos aceitos por `keep`.
+/// Campos: maj min nome lidas_ok lidas_merge setores_lidos ms escritas_ok merge setores_escritos …
+fn parse_diskstats(s: &str, keep: impl Fn(&str) -> bool) -> (u64, u64) {
+    let (mut r, mut w) = (0u64, 0u64);
+    for line in s.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 10 || !keep(f[2]) {
+            continue;
+        }
+        r += f[5].parse::<u64>().unwrap_or(0) * 512;
+        w += f[9].parse::<u64>().unwrap_or(0) * 512;
+    }
+    (r, w)
 }
 
 /// "1.71 0.73 0.55 3/744 834793" → 744 (entidades agendáveis = threads).
@@ -480,6 +519,13 @@ mod tests {
         assert!((p.user + p.nice + p.system + p.idle + p.iowait + p.steal - 100.0).abs() < 1e-9);
         assert!(cpu_parts(&a, &a).is_none());
         assert_eq!(parse_loadavg_threads("1.71 0.73 0.55 3/744 834793"), Some(744));
+    }
+
+    #[test]
+    fn parses_diskstats_whole_disks_only() {
+        let s = "   8       0 sda 100 0 2000 10 50 0 4000 20 0 0 0\n   8       1 sda1 90 0 1800 9 40 0 3000 10 0 0 0\n   7       0 loop0 5 0 80 0 0 0 0 0 0 0 0\n   8      32 sdc 10 0 200 1 5 0 100 0 0 0 0\n";
+        let (r, w) = parse_diskstats(s, |n| n == "sda" || n == "sdc");
+        assert_eq!((r, w), ((2000 + 200) * 512, (4000 + 100) * 512));
     }
 
     #[test]

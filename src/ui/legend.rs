@@ -33,7 +33,7 @@ fn sessions(t: &Theme) -> Vec<Entry> {
     ]
 }
 
-fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
+fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
     let muted = Style::new().fg(t.muted);
     let fg = Style::new().fg(t.fg);
     match panel {
@@ -99,8 +99,8 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
                 (st("━━━━", Style::new().fg(t.gauge_low)), "uso abaixo de 60%"),
                 (st("━━━━", Style::new().fg(t.gauge_mid)), "entre 60% e 85%"),
                 (st("━━━━", Style::new().fg(t.gauge_high)), "acima de 85%"),
-                (st("MEM  93%", level_style(t, Level::Warn, blink)), "aviso: perto do limite configurado"),
-                (st("MEM  96%", level_style(t, Level::Critical, blink)), "crítico, piscando: risco de travar; os maiores ofensores piscam junto"),
+                (st("MEM  93%", level_style(t, Level::Warn)), "aviso: perto do limite configurado"),
+                (st("MEM  96%", level_style(t, Level::Critical)), "crítico, em vermelho negrito: risco de travar; os maiores ofensores também ficam vermelhos"),
                 (st("load 1.2 0.9", muted), "processos na fila: média de 1, 5 e 15 min (mais que o nº de núcleos = fila)"),
                 (st("PSI", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "% do tempo em que algo esperou CPU, memória ou disco (10 s); mem alta = travamento chegando"),
                 (st("↓ ↑", Style::new().fg(t.spark)), "download e upload agora"),
@@ -136,7 +136,7 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
 
 pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let t = s.theme();
-    let (title, list) = entries(s.active_panel(), t, s.blink_on());
+    let (title, list) = entries(s.active_panel(), t);
     let sym_w = list.iter().map(|(sp, _)| sp.content.chars().count()).max().unwrap_or(4) + 3;
     let mut lines: Vec<Line> = list
         .into_iter()

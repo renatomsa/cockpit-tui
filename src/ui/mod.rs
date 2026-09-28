@@ -183,7 +183,7 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
     if let Some(d) = &s.system.data
         && let Some((lvl, reason)) = d.danger.reasons.first()
     {
-        right.push(Span::styled(format!(" ⚠ {reason} "), system::level_style(t, *lvl, s.blink_on())));
+        right.push(Span::styled(format!(" ⚠ {reason} "), system::level_style(t, *lvl)));
         right.push(lbl("  ·  "));
     }
     right.extend([geo, lbl("  ·  "), Span::styled(t.name.clone(), Style::new().fg(t.accent)), Span::raw(" ")]);

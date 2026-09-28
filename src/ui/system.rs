@@ -1,5 +1,5 @@
 //! Painel de sistema: um htop enxuto. As linhas têm prioridade; se faltar altura,
-//! somem as menos importantes. Em nível crítico, métrica e ofensores piscam.
+//! somem as menos importantes. Em nível crítico, métrica e ofensores ficam em vermelho negrito.
 
 use ratatui::{
     Frame,
@@ -17,9 +17,8 @@ use crate::{
     theme::Theme,
 };
 
-/// Largura da coluna de rótulo ("DISCO ") e da de percentual (" 100%  ").
+/// Largura da coluna de rótulo ("REDE  ").
 const LABEL_W: usize = 7;
-const PCT_W: usize = 7;
 
 pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let t = s.theme();
@@ -34,7 +33,7 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let worst = d.danger.worst();
     if worst > Level::Ok {
         let reason = d.danger.reasons.first().map(|r| r.1.as_str()).unwrap_or("");
-        let style = level_style(t, worst, s.blink_on());
+        let style = level_style(t, worst);
         block = block
             .border_style(Style::new().fg(if worst == Level::Critical { t.alert } else { t.warn }))
             .title(Span::styled(format!(" ⚠ {reason} "), style));
@@ -45,8 +44,10 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
         return;
     }
 
-    // Caixas de CPU e Memória no topo; o resto do painel fica embaixo delas.
-    let boxes_h = super::sysboxes::draw(f, inner, s, d) + 1;
+    // Caixas de CPU e Memória no topo, a de Disco logo abaixo; o resto fica embaixo delas.
+    let mut boxes_h = super::sysboxes::draw(f, inner, s, d);
+    let rest = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
+    boxes_h += super::sysboxes::draw_disk(f, rest, s, d) + 1;
     let inner = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
     if inner.height == 0 {
         return;
@@ -69,7 +70,7 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let h = h_rest;
     let inner = Rect { height: h as u16, ..inner };
 
-    let rows = metric_rows(s, d, w);
+    let rows = metric_rows(s, d);
     let lines = fit_by_priority(rows, h - top_rows);
     let metrics_h = lines.len() as u16;
     f.render_widget(Paragraph::new(lines), Rect { height: metrics_h, ..inner });
@@ -152,11 +153,9 @@ fn fit_by_priority(rows: Vec<(u8, Line<'static>)>, budget: usize) -> Vec<Line<'s
 /// Prioridade das linhas em branco entre grupos: são as primeiras a sumir quando falta altura.
 const SPACER: u8 = 9;
 
-fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'static>)> {
+fn metric_rows(s: &AppState, d: &SystemSnapshot) -> Vec<(u8, Line<'static>)> {
     let t = s.theme();
-    let blink = s.blink_on();
     // Grade fixa: rótulo | barra | % | detalhe. Todas as barras começam e terminam na mesma coluna.
-    let bar_w = w.saturating_sub(LABEL_W + PCT_W + 22).clamp(8, 36);
     let indent = || Span::raw(" ".repeat(LABEL_W));
     let dz = &d.danger;
     let mut rows: Vec<(u8, Line<'static>)> = Vec::new();
@@ -166,27 +165,14 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
         rows.push((
             3,
             Line::from(vec![
-                label(t, "PSI", dz.psi, blink),
+                label(t, "PSI", dz.psi),
                 muted(t, format!("cpu {:<6.1}", p.cpu)),
-                Span::styled(format!("mem {:<6.1}", p.mem), if dz.psi > Level::Ok { level_style(t, dz.psi, blink) } else { Style::new().fg(t.fg) }),
+                Span::styled(format!("mem {:<6.1}", p.mem), if dz.psi > Level::Ok { level_style(t, dz.psi) } else { Style::new().fg(t.fg) }),
                 muted(t, format!("io {:.1}", p.io)),
             ]),
         ));
     }
     rows.push(spacer());
-
-    // ── Discos
-    let mount_w = d.disks.iter().map(|x| x.mount.chars().count()).max().unwrap_or(1).min(10);
-    for (i, disk) in d.disks.iter().enumerate() {
-        let lvl = dz.disks.get(&disk.mount).copied().unwrap_or_default();
-        let mut l = gauge(t, if i == 0 { "DISCO" } else { "" }, disk.pct(), bar_w, lvl, blink);
-        l.spans.push(Span::styled(format!("{:<mount_w$}  ", truncate(&disk.mount, mount_w)), Style::new().fg(t.fg)));
-        l.spans.push(muted(t, format!("{} livres", bytes(disk.total - disk.used))));
-        rows.push((2, l));
-    }
-    if !d.disks.is_empty() {
-        rows.push(spacer());
-    }
 
     // ── Rede
     match &d.net {
@@ -194,14 +180,14 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
             rows.push((
                 1,
                 Line::from(vec![
-                    label(t, "REDE", Level::Ok, blink),
+                    label(t, "REDE", Level::Ok),
                     Span::styled(format!("↓ {:<10}", rate(n.rx)), Style::new().fg(t.spark)),
                     Span::styled(format!("↑ {:<10}", rate(n.tx)), Style::new().fg(t.spark)),
                     muted(t, n.iface.clone()),
                 ]),
             ));
         }
-        None => rows.push((1, Line::from(vec![label(t, "REDE", Level::Ok, blink), muted(t, "medindo…".into())]))),
+        None => rows.push((1, Line::from(vec![label(t, "REDE", Level::Ok), muted(t, "medindo…".into())]))),
     }
     match &s.ping.data {
         Some(p) => {
@@ -214,13 +200,13 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
             rows.push((
                 1,
                 Line::from(vec![
-                    label(t, "PING", Level::Ok, blink),
+                    label(t, "PING", Level::Ok),
                     Span::styled(format!("{txt:<12}"), Style::new().fg(color).add_modifier(Modifier::BOLD)),
                     muted(t, format!("{jit:<5} perda {:.0}%  {host}", p.loss_pct)),
                 ]),
             ));
         }
-        None => rows.push((1, Line::from(vec![label(t, "PING", Level::Ok, blink), muted(t, "medindo…".into())]))),
+        None => rows.push((1, Line::from(vec![label(t, "PING", Level::Ok), muted(t, "medindo…".into())]))),
     }
 
     // ── Rodapé
@@ -242,7 +228,6 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
 /// Cabeçalho + `n` linhas: TOP CPU à esquerda, TOP MEM à direita (ou só a coluna ativa, se estreito).
 fn top_lines(s: &AppState, d: &SystemSnapshot, w: usize, n: usize) -> Vec<Line<'static>> {
     let t = s.theme();
-    let blink = s.blink_on();
     let focused = s.focus == Panel::System;
     let two = w >= 44;
     let col_w = if two { (w - 3) / 2 } else { w };
@@ -280,7 +265,7 @@ fn top_lines(s: &AppState, d: &SystemSnapshot, w: usize, n: usize) -> Vec<Line<'
         let count = if g.count > 1 { format!(" ×{}", g.count) } else { String::new() };
         let name_w = col_w.saturating_sub(value.chars().count() + count.chars().count() + 1);
         let text = format!("{:<name_w$}{count} {value}", truncate(&g.name, name_w));
-        let mut style = if offender && lvl > Level::Ok { level_style(t, lvl, blink) } else { Style::new().fg(t.fg) };
+        let mut style = if offender && lvl > Level::Ok { level_style(t, lvl) } else { Style::new().fg(t.fg) };
         if focused && sel.col == col && sel.row == i {
             style = style.add_modifier(Modifier::REVERSED);
         }
@@ -303,21 +288,8 @@ fn top_lines(s: &AppState, d: &SystemSnapshot, w: usize, n: usize) -> Vec<Line<'
     out
 }
 
-/// `RÓTULO ━━━━━━━━━━━━━━━  43%  ` — o detalhe entra depois, pelo chamador.
-fn gauge(t: &Theme, name: &str, pct: f64, bar_w: usize, lvl: Level, blink: bool) -> Line<'static> {
-    let (filled, empty) = bar(pct, bar_w);
-    let pct_style = if lvl == Level::Ok { Style::new().fg(t.fg).add_modifier(Modifier::BOLD) } else { level_style(t, lvl, blink) };
-    Line::from(vec![
-        label(t, name, lvl, blink),
-        Span::styled(filled, Style::new().fg(gauge_color(t, pct, lvl))),
-        Span::styled(empty, Style::new().fg(t.border)),
-        Span::styled(format!(" {pct:>3.0}%"), pct_style),
-        Span::raw("  "),
-    ])
-}
-
-fn label(t: &Theme, name: &str, lvl: Level, blink: bool) -> Span<'static> {
-    let style = if lvl == Level::Ok { Style::new().fg(t.accent).add_modifier(Modifier::BOLD) } else { level_style(t, lvl, blink) };
+fn label(t: &Theme, name: &str, lvl: Level) -> Span<'static> {
+    let style = if lvl == Level::Ok { Style::new().fg(t.accent).add_modifier(Modifier::BOLD) } else { level_style(t, lvl) };
     Span::styled(format!("{name:<LABEL_W$}"), style)
 }
 
@@ -325,17 +297,17 @@ fn muted(t: &Theme, s: String) -> Span<'static> {
     Span::styled(s, Style::new().fg(t.muted))
 }
 
-/// Amarelo no aviso; vermelho piscando (alterna fundo) no crítico.
-pub(crate) fn level_style(t: &Theme, lvl: Level, blink: bool) -> Style {
+/// Amarelo no aviso; vermelho em negrito no crítico. Sem pisca: piscar é só do alerta
+/// de reunião, para não competir com ele.
+pub(crate) fn level_style(t: &Theme, lvl: Level) -> Style {
     match lvl {
         Level::Ok => Style::new().fg(t.fg),
         Level::Warn => Style::new().fg(t.warn).add_modifier(Modifier::BOLD),
-        Level::Critical if blink => Style::new().fg(t.alert_fg).bg(t.alert_bg).add_modifier(Modifier::BOLD),
         Level::Critical => Style::new().fg(t.alert).add_modifier(Modifier::BOLD),
     }
 }
 
-fn gauge_color(t: &Theme, pct: f64, lvl: Level) -> Color {
+pub(crate) fn gauge_color(t: &Theme, pct: f64, lvl: Level) -> Color {
     match lvl {
         Level::Critical => t.alert,
         Level::Warn => t.warn,
