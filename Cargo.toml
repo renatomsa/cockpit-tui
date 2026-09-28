@@ -1,5 +1,5 @@
 [package]
-name = "copilot-tui"
+name = "cockpit-tui"
 version = "0.1.0"
 description = "Cockpit de terminal para desenvolvedores: relógio, agenda, sistema, worktrees e sessões do Claude"
 license = "MIT"
