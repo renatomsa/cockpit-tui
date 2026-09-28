@@ -13,13 +13,17 @@ Escrito em Rust. Parado, usa menos de 1 % de CPU e cerca de 30 MB de memória.
 ## Instalar
 
 ```sh
-cargo install --path .                                 # binário `cockpit` em ~/.cargo/bin
+CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git ssh://git@github.com/renatomsa/cockpit-tui.git
 cockpit config init                                    # ~/.config/cockpit/config.toml comentado
 echo 'eval "$(cockpit shell-init zsh)"' >> ~/.zshrc    # para o Enter trocar de pasta (bash e fish também)
 exec zsh && cockpit
 ```
 
-Para atualizar: `cargo install --path . --force`. Para ver o que falta configurar: `cockpit doctor`.
+O repositório é privado. A variável `CARGO_NET_GIT_FETCH_WITH_CLI` faz o cargo usar o `git` do sistema, com a sua chave SSH do GitHub. Para não repeti-la, ponha `[net]` com `git-fetch-with-cli = true` em `~/.cargo/config.toml`. Para usar HTTPS em vez de SSH, rode `gh auth setup-git` uma vez e use `--git https://github.com/renatomsa/cockpit-tui`.
+
+- **Atualizar:** o mesmo comando com `--force`.
+- **A partir de um clone:** `cargo install --path .`.
+- **Ver o que falta configurar:** `cockpit doctor`.
 
 ## Painéis
 
