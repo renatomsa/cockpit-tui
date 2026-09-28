@@ -174,6 +174,26 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
                 let _ = results.send(Action::Notice(msg));
             });
         }
+        Effect::RemoveWorktree(r) => {
+            tokio::spawn(async move {
+                let path = r.path.display().to_string();
+                let args: Vec<&str> = if r.prunable {
+                    vec!["worktree", "prune"]
+                } else if r.dirty > 0 {
+                    vec!["worktree", "remove", "--force", &path]
+                } else {
+                    vec!["worktree", "remove", &path]
+                };
+                let out = tokio::process::Command::new("git").arg("-C").arg(&r.repo).args(&args).output().await;
+                let msg = match out {
+                    Ok(o) if o.status.success() => format!("worktree {} excluída", r.name),
+                    Ok(o) => format!("git worktree falhou: {}", String::from_utf8_lossy(&o.stderr).trim()),
+                    Err(e) => format!("git não executou: {e}"),
+                };
+                tracing::info!("{msg}");
+                let _ = results.send(Action::Notice(msg));
+            });
+        }
         Effect::Docker { cmds, label } => {
             let _ = results.send(Action::Notice(format!("{label}…")));
             tokio::spawn(async move {

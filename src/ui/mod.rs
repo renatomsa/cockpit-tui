@@ -8,6 +8,8 @@ pub mod layout;
 mod legend;
 mod sessions;
 mod system;
+mod sysboxes;
+mod workspace;
 mod worktrees;
 
 use ratatui::{
@@ -34,10 +36,7 @@ pub fn draw(f: &mut Frame, s: &AppState) {
         docker::draw(f, r, s);
     }
     if let Some(r) = a.worktrees {
-        worktrees::draw(f, r, s);
-    }
-    if let Some(r) = a.sessions {
-        sessions::draw(f, r, s);
+        workspace::draw(f, r, s);
     }
     if let Some(r) = a.agenda {
         agenda::draw(f, r, s);
@@ -53,6 +52,49 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if let Some(c) = &s.confirm {
         confirm_dialog(f, area, s, c);
     }
+}
+
+/// Textos dos dois avisos de exclusão de worktree.
+fn remove_worktree_lines(s: &AppState, r: &crate::app::state::RemoveWt) -> (String, Vec<Line<'static>>) {
+    let t = s.theme();
+    let fg = Style::new().fg(t.fg);
+    let muted = Style::new().fg(t.muted);
+    let bold = Style::new().fg(t.alert).add_modifier(Modifier::BOLD);
+    let path = crate::config::tilde(&r.path);
+    let branch = r.branch.clone().unwrap_or_else(|| "(HEAD solta)".into());
+    if r.step == 1 {
+        let mut lines = vec![
+            Line::from(vec![Span::styled("Excluir a worktree ", fg), Span::styled(r.name.clone(), bold), Span::styled("?", fg)]),
+            Line::styled(format!("pasta   {path}"), muted),
+            Line::styled(format!("branch  {branch}  (continua existindo)"), muted),
+        ];
+        if r.prunable {
+            lines.push(Line::styled("a pasta já sumiu do disco: só limpa a lista (git worktree prune)", muted));
+        }
+        return (" excluir worktree ".into(), lines);
+    }
+    let mut lines = vec![Line::from(vec![Span::styled("A pasta ", fg), Span::styled(path.clone(), bold), Span::styled(" será apagada do disco.", fg)])];
+    if r.dirty > 0 {
+        lines.push(Line::styled(
+            format!("{} arquivo{} alterado{} ou novo{}, sem commit, será{} PERDIDO{}.", r.dirty, pl(r.dirty), pl(r.dirty), pl(r.dirty), if r.dirty == 1 { "" } else { "ão" }, if r.dirty == 1 { "" } else { "S" }),
+            bold,
+        ));
+    } else {
+        lines.push(Line::styled("Não há alterações pendentes: tudo já está em commits.", fg));
+    }
+    if r.sessions > 0 {
+        lines.push(Line::styled(
+            format!("{} conversa{} do Claude aberta{} nela vai{} ficar sem pasta.", r.sessions, pl(r.sessions as u32), pl(r.sessions as u32), if r.sessions == 1 { "" } else { "ão" }),
+            Style::new().fg(t.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
+    lines.push(Line::styled(format!("A branch {branch} não é apagada (git branch -D {branch} remove)."), muted));
+    lines.push(Line::styled("Não dá para desfazer.", bold));
+    (" ⚠ exclusão definitiva ".into(), lines)
+}
+
+fn pl(n: u32) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 fn confirm_dialog(f: &mut Frame, area: Rect, s: &AppState, c: &crate::app::state::Confirm) {
@@ -71,19 +113,27 @@ fn confirm_dialog(f: &mut Frame, area: Rect, s: &AppState, c: &crate::app::state
             format!(" {title} "),
             lines.iter().map(|l| Line::styled(l.clone(), Style::new().fg(t.fg))).collect(),
         ),
+        Confirm::RemoveWorktree(r) => remove_worktree_lines(s, r),
+    };
+    let (key, rest) = match c {
+        Confirm::RemoveWorktree(r) if r.step == 1 => ("y", " continua · qualquer outra tecla cancela"),
+        Confirm::RemoveWorktree(_) => ("Enter", " exclui de vez · qualquer outra tecla cancela"),
+        _ => ("y", " confirma · qualquer outra tecla cancela"),
     };
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-        Span::styled(" confirma · qualquer outra tecla cancela", Style::new().fg(t.muted)),
+        Span::styled(key, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(rest, Style::new().fg(t.muted)),
     ]));
+    // Pergunta curta fica centralizada; avisos com detalhes, alinhados à esquerda.
+    let align = if matches!(c, Confirm::Kill(_)) { Alignment::Center } else { Alignment::Left };
     let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(20).max(title.chars().count());
     let w = (content_w as u16 + 4).min(area.width);
     let h = (lines.len() as u16 + 2).min(area.height);
     let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
     f.render_widget(Clear, r);
     f.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Center).block(
+        Paragraph::new(lines).alignment(align).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().fg(t.alert))
@@ -156,13 +206,15 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
             lbl(" dispensar"),
         ]),
         None => {
-            let hints: &[(&'static str, &'static str)] = match s.focus {
+            let hints: &[(&'static str, &'static str)] = match s.active_panel() {
                 _ if s.filter_editing => &[("digite", " para filtrar  "), ("↑↓", " escolher  "), ("Enter", " aplicar  "), ("Esc", " limpar")],
                 Panel::System => &[("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Worktrees => &[
+                    ("←→", " aba  "),
                     ("↑↓", " escolher  "),
                     ("Enter", " ir para a pasta  "),
                     ("C", " claude numa aba nova  "),
+                    ("D", " excluir  "),
                     ("/", " filtrar  "),
                     ("i", " legenda  "),
                     ("Tab", " foco  "),
@@ -170,7 +222,7 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
                 ],
                 Panel::Agenda => &[("↑↓", " escolher  "), ("o", " abrir a chamada  "), ("y", " copiar link  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Docker => &[("↑↓", " escolher  "), ("K", " parar container  "), ("X", " derrubar tudo  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
-                Panel::Sessions => &[("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
+                Panel::Sessions => &[("←→", " aba  "), ("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 _ => &[("Tab", " foco  "), ("t", " tema  "), ("i", " legenda  "), ("?", " ajuda  "), ("q", " sair")],
             };
             let mut spans = vec![Span::raw(" ")];
@@ -199,6 +251,8 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ("Enter (Worktrees)", "sai e vai para a worktree (com o shell-init)"),
         ("C (Worktrees)", "abre `claude --continue` numa aba nova, na worktree"),
         ("/ (Worktrees)", "filtra por nome ou branch; Esc limpa"),
+        ("D (Worktrees)", "exclui a worktree selecionada (dois avisos antes)"),
+        ("← → (Worktrees)", "troca entre as abas Worktrees e Claude"),
         ("Enter (Claude)", "sai e vai para a pasta da conversa"),
         ("r (Claude)", "retoma uma conversa encerrada numa aba nova"),
         ("o / y (Agenda)", "abre a chamada da reunião / copia o link"),

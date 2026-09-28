@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::state::{AppState, Confirm, KillTarget, Panel, ProcCol};
+use super::state::{AppState, Confirm, KillTarget, Panel, ProcCol, RemoveWt, WtTab};
 use crate::{
     providers::{
         Snapshot,
@@ -47,6 +47,8 @@ pub enum Effect {
     Kill(KillTarget),
     /// Abre uma URL no navegador (link da reunião).
     OpenUrl(String),
+    /// `git worktree remove` (ou `prune`), já confirmado nos dois avisos.
+    RemoveWorktree(RemoveWt),
     /// Comandos do Docker já confirmados; `label` resume a ação na barra de status.
     Docker { cmds: Vec<DockerCmd>, label: String },
     /// Copia para a área de transferência pelo terminal (OSC 52).
@@ -146,11 +148,25 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
         s.quit = true;
         return Outcome::default();
     }
+    if let Some(Confirm::RemoveWorktree(r)) = s.confirm.take_if(|c| matches!(c, Confirm::RemoveWorktree(_))) {
+        return match (r.step, k.code) {
+            (1, KeyCode::Char('y') | KeyCode::Char('Y')) => {
+                s.confirm = Some(Confirm::RemoveWorktree(RemoveWt { step: 2, ..r }));
+                Outcome::redraw()
+            }
+            (2, KeyCode::Enter) => Outcome { redraw: true, effect: Some(Effect::RemoveWorktree(r)) },
+            _ => {
+                s.notices.insert(0, format!("exclusão de {} cancelada", r.name));
+                Outcome::redraw()
+            }
+        };
+    }
     if let Some(c) = s.confirm.take() {
         let yes = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'));
         let effect = yes.then_some(match c {
             Confirm::Kill(t) => Effect::Kill(t),
             Confirm::Docker { title, cmds, .. } => Effect::Docker { cmds, label: title },
+            Confirm::RemoveWorktree(r) => Effect::RemoveWorktree(r),
         });
         return Outcome { redraw: true, effect };
     }
@@ -201,12 +217,19 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
     {
         return out;
     }
-    if s.focus == Panel::Worktrees
+    if s.focus == Panel::Worktrees && matches!(k.code, KeyCode::Left | KeyCode::Right) {
+        s.wt_tab = match s.wt_tab {
+            WtTab::Worktrees => WtTab::Claude,
+            WtTab::Claude => WtTab::Worktrees,
+        };
+        return Outcome::redraw();
+    }
+    if s.active_panel() == Panel::Worktrees
         && let Some(out) = on_worktrees_key(s, k.code)
     {
         return out;
     }
-    if s.focus == Panel::Sessions
+    if s.active_panel() == Panel::Sessions
         && let Some(out) = on_sessions_key(s, k.code)
     {
         return out;
@@ -342,6 +365,26 @@ fn on_worktrees_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
             s.wt_sel = 0;
             Some(Outcome::redraw())
         }
+        KeyCode::Char('D') => {
+            let w = s.selected_worktree()?.clone();
+            if w.is_main {
+                s.notices.insert(0, format!("{} é a pasta principal do repositório: não é excluída por aqui", w.name));
+                return Some(Outcome::redraw());
+            }
+            let repo = s.worktrees.data.as_ref()?.repos.iter().find(|r| r.worktrees.iter().any(|x| x.path == w.path))?.path.clone();
+            let sessions = s.wt_sessions.get(&w.path).map_or(0, |v| v.len());
+            s.confirm = Some(Confirm::RemoveWorktree(RemoveWt {
+                step: 1,
+                name: w.name.clone(),
+                path: w.path.clone(),
+                repo,
+                branch: w.branch.clone(),
+                dirty: w.dirty.unwrap_or(0),
+                sessions,
+                prunable: w.prunable,
+            }));
+            Some(Outcome::redraw())
+        }
         KeyCode::Enter | KeyCode::Char('C') => {
             let w = s.selected_worktree()?;
             if w.prunable {
@@ -471,10 +514,15 @@ mod tests {
         update(&mut s, key(KeyCode::Tab));
         assert_eq!(s.focus, Panel::System);
         update(&mut s, key(KeyCode::Tab));
-        update(&mut s, key(KeyCode::Tab));
         assert_eq!(s.focus, Panel::Hero);
         update(&mut s, key(KeyCode::BackTab));
-        assert_eq!(s.focus, Panel::Sessions);
+        assert_eq!(s.focus, Panel::System);
+        update(&mut s, key(KeyCode::BackTab));
+        // ←→ trocam a aba do painel de worktrees
+        update(&mut s, key(KeyCode::Right));
+        assert_eq!(s.active_panel(), Panel::Sessions);
+        update(&mut s, key(KeyCode::Left));
+        assert_eq!(s.active_panel(), Panel::Worktrees);
         update(&mut s, key(KeyCode::Char('q')));
         assert!(s.quit);
     }
@@ -594,6 +642,31 @@ mod tests {
     }
 
     #[test]
+    fn remove_worktree_needs_two_confirmations() {
+        let mut s = state();
+        with_worktrees(&mut s);
+        with_sessions(&mut s);
+        // a principal não sai
+        update(&mut s, key(KeyCode::Char('D')));
+        assert!(s.confirm.is_none() && s.notices[0].contains("principal"));
+        update(&mut s, key(KeyCode::Down));
+        update(&mut s, key(KeyCode::Char('D')));
+        let Some(Confirm::RemoveWorktree(r)) = s.confirm.clone() else { panic!("{:?}", s.confirm) };
+        assert_eq!((r.step, r.name.as_str(), r.sessions), (1, "processable-file-cfs", 1));
+        assert_eq!(r.repo, std::path::PathBuf::from("/h/v360"));
+        // y leva ao segundo aviso; um segundo y não apaga
+        update(&mut s, key(KeyCode::Char('y')));
+        assert!(matches!(&s.confirm, Some(Confirm::RemoveWorktree(r)) if r.step == 2));
+        let out = update(&mut s, key(KeyCode::Char('y')));
+        assert!(out.effect.is_none() && s.confirm.is_none(), "no segundo aviso só Enter confirma");
+        // de novo, agora até o fim
+        update(&mut s, key(KeyCode::Char('D')));
+        update(&mut s, key(KeyCode::Char('y')));
+        let out = update(&mut s, key(KeyCode::Enter));
+        assert!(matches!(out.effect, Some(Effect::RemoveWorktree(ref r)) if r.name == "processable-file-cfs"));
+    }
+
+    #[test]
     fn continue_opens_a_new_tab_and_keeps_running() {
         let mut s = state();
         s.has_cd_file = true;
@@ -671,7 +744,8 @@ mod tests {
         s.has_cd_file = true;
         with_worktrees(&mut s);
         with_sessions(&mut s);
-        s.focus = Panel::Sessions;
+        s.focus = Panel::Worktrees;
+        s.wt_tab = WtTab::Claude;
         update(&mut s, key(KeyCode::Char('r')));
         assert!(!s.quit && s.notices[0].contains("já está aberta"));
         update(&mut s, key(KeyCode::Char('G')));
@@ -686,7 +760,8 @@ mod tests {
         s2.launcher = Some(crate::terminal::Launcher::Tmux);
         with_worktrees(&mut s2);
         with_sessions(&mut s2);
-        s2.focus = Panel::Sessions;
+        s2.focus = Panel::Worktrees;
+        s2.wt_tab = WtTab::Claude;
         update(&mut s2, key(KeyCode::Char('G')));
         let out = update(&mut s2, key(KeyCode::Char('r')));
         assert!(!s2.quit);

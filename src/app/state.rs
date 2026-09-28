@@ -38,7 +38,8 @@ pub enum Panel {
 }
 
 impl Panel {
-    const ORDER: [Panel; 6] = [Panel::Hero, Panel::Agenda, Panel::Docker, Panel::Worktrees, Panel::System, Panel::Sessions];
+    /// `Sessions` não recebe foco direto: é a aba "Claude" do painel de Worktrees.
+    const ORDER: [Panel; 5] = [Panel::Hero, Panel::Agenda, Panel::Docker, Panel::Worktrees, Panel::System];
 
     pub fn next(self) -> Self {
         let i = Self::ORDER.iter().position(|p| *p == self).unwrap();
@@ -49,6 +50,14 @@ impl Panel {
         let i = Self::ORDER.iter().position(|p| *p == self).unwrap();
         Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
     }
+}
+
+/// Aba do painel que junta worktrees e conversas do Claude.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WtTab {
+    #[default]
+    Worktrees,
+    Claude,
 }
 
 /// Coluna de processos selecionada no painel de sistema.
@@ -79,6 +88,24 @@ pub enum Confirm {
     Kill(KillTarget),
     /// Comandos do Docker: título do diálogo, linhas explicando o que vai acontecer.
     Docker { title: String, lines: Vec<String>, cmds: Vec<crate::providers::docker::DockerCmd> },
+    /// Excluir uma worktree: passo 1 pergunta (`y`), passo 2 avisa o que se perde (Enter).
+    RemoveWorktree(RemoveWt),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoveWt {
+    pub step: u8,
+    pub name: String,
+    pub path: PathBuf,
+    /// Repositório principal, onde o `git worktree remove` roda.
+    pub repo: PathBuf,
+    pub branch: Option<String>,
+    /// Arquivos alterados ou novos, sem commit.
+    pub dirty: u32,
+    /// Conversas do Claude abertas dentro dela.
+    pub sessions: usize,
+    /// A pasta já não existe: basta `git worktree prune`.
+    pub prunable: bool,
 }
 
 /// Todo o estado da tela. Só `update` escreve aqui; só `ui::draw` lê.
@@ -107,6 +134,7 @@ pub struct AppState {
     /// Reuniões cujo alerta o usuário já parou (`Event::key`).
     pub dismissed: HashSet<String>,
     pub agenda_sel: usize,
+    pub wt_tab: WtTab,
     pub docker_sel: usize,
     /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
@@ -162,6 +190,7 @@ impl AppState {
             snoozed_until: None,
             dismissed: HashSet::new(),
             agenda_sel: 0,
+            wt_tab: WtTab::Worktrees,
             docker_sel: 0,
             wt_sessions: HashMap::new(),
             wt_sel: 0,
@@ -182,6 +211,14 @@ impl AppState {
         };
         s.recompute_tz();
         s
+    }
+
+    /// Painel que recebe as teclas: no painel de worktrees, depende da aba.
+    pub fn active_panel(&self) -> Panel {
+        match (self.focus, self.wt_tab) {
+            (Panel::Worktrees, WtTab::Claude) => Panel::Sessions,
+            (p, _) => p,
+        }
     }
 
     pub fn theme(&self) -> &Theme {

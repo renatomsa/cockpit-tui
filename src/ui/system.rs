@@ -45,6 +45,13 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
         return;
     }
 
+    // Caixas de CPU e Memória no topo; o resto do painel fica embaixo delas.
+    let boxes_h = super::sysboxes::draw(f, inner, s, d) + 1;
+    let inner = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
+    if inner.height == 0 {
+        return;
+    }
+
     let w = inner.width as usize;
     let h = inner.height as usize;
     let n = s.config.system.top_n;
@@ -155,24 +162,6 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
     let mut rows: Vec<(u8, Line<'static>)> = Vec::new();
     let spacer = || (SPACER, Line::raw(""));
 
-    // ── CPU
-    let mut l = gauge(t, "CPU", d.cpu as f64, bar_w, dz.cpu, blink);
-    l.spans.push(muted(t, format!("load {:.2} {:.2} {:.2}", d.load.0, d.load.1, d.load.2)));
-    rows.push((0, l));
-    rows.push(spacer());
-
-    // ── Memória
-    let mut l = gauge(t, "MEM", d.mem_pct(), bar_w, dz.mem, blink);
-    l.spans.push(muted(t, format!("{} / {}", bytes(d.mem_used), bytes(d.mem_total))));
-    rows.push((0, l));
-    match d.swap_pct() {
-        Some(p) => {
-            let mut l = gauge(t, "SWAP", p, bar_w, dz.swap, blink);
-            l.spans.push(muted(t, format!("{} / {}", bytes(d.swap_used), bytes(d.swap_total))));
-            rows.push((1, l));
-        }
-        None => rows.push((1, Line::from(vec![label(t, "SWAP", Level::Ok, blink), muted(t, "sem swap".into())]))),
-    }
     if let Some(p) = d.psi {
         rows.push((
             3,
@@ -235,7 +224,7 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot, w: usize) -> Vec<(u8, Line<'sta
     }
 
     // ── Rodapé
-    let mut info = format!("up {} · {} processos", uptime(d.uptime), d.proc_count);
+    let mut info = format!("ligado há {}", uptime(d.uptime));
     if let Some(b) = &d.battery {
         let st = match b.status.as_str() {
             "Charging" => "carregando",

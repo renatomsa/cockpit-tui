@@ -8,7 +8,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::{ago, panel_block, system::bar, truncate, worktrees::status_icon};
+use super::{ago, system::bar, truncate, worktrees::status_icon};
 use crate::{
     app::state::{AppState, Panel},
     locale,
@@ -20,17 +20,9 @@ use crate::{
     theme::Theme,
 };
 
-pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
+/// Conteúdo da aba Claude (a moldura com as abas é do `workspace`).
+pub fn body(f: &mut Frame, inner: Rect, s: &AppState) {
     let t = s.theme();
-    let waiting = s.waiting_count();
-    let mut block = panel_block(s, Panel::Sessions, Some("Claude"));
-    if waiting > 0 {
-        block = block
-            .border_style(Style::new().fg(t.warn))
-            .title(Span::styled(format!(" ◆ {waiting} esperando você "), Style::new().fg(t.warn).add_modifier(Modifier::BOLD)));
-    }
-    let inner = block.inner(area);
-    f.render_widget(block, area);
     if inner.height == 0 || inner.width < 20 {
         return;
     }
@@ -51,7 +43,7 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
         return;
     }
 
-    let focused = s.focus == Panel::Sessions;
+    let focused = s.active_panel() == Panel::Sessions;
     let mut lines: Vec<Line> = Vec::new();
     let mut sel_line = 0;
     if d.live.is_empty() {

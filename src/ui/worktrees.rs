@@ -9,7 +9,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::{ago, panel_block, pad, system::bytes, truncate};
+use super::{ago, pad, system::bytes, truncate};
 use crate::{
     app::state::{AppState, Panel},
     config::tilde,
@@ -20,11 +20,9 @@ use crate::{
     theme::Theme,
 };
 
-pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
+/// Conteúdo da aba Worktrees (a moldura com as abas é do `workspace`).
+pub fn body(f: &mut Frame, inner: Rect, s: &AppState) {
     let t = s.theme();
-    let block = panel_block(s, Panel::Worktrees, Some("Worktrees"));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
     if inner.height == 0 || inner.width < 20 {
         return;
     }
@@ -176,7 +174,7 @@ fn branch_text(w: &Worktree) -> String {
 }
 
 fn worktree_line(s: &AppState, t: &Theme, w: &Worktree, c: &Columns, is_last: bool, selected: bool) -> Line<'static> {
-    let focused = s.focus == Panel::Worktrees;
+    let focused = s.active_panel() == Panel::Worktrees;
     let tree = if is_last { "└ " } else { "├ " };
     let pointer = if selected && focused { "▸ " } else { "  " };
     let name_style = if w.prunable {

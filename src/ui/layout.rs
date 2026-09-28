@@ -20,7 +20,6 @@ pub struct Areas {
     pub docker: Option<Rect>,
     pub worktrees: Option<Rect>,
     pub system: Option<Rect>,
-    pub sessions: Option<Rect>,
     pub status: Rect,
 }
 
@@ -35,7 +34,6 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
             docker: None,
             worktrees: None,
             system: None,
-            sessions: None,
             status,
         };
     }
@@ -54,7 +52,8 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
             Constraint::Min(5),
         ])
         .areas(left);
-        let [system, sessions] = Layout::vertical([Constraint::Percentage(55), Constraint::Min(5)]).areas(right);
+        // Worktrees e Claude viraram abas do mesmo painel: o Sistema fica com a coluna toda.
+        let system = right;
         return Areas {
             mode: Mode::Wide,
             hero,
@@ -62,17 +61,15 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
             docker: Some(docker),
             worktrees: Some(worktrees),
             system: Some(system),
-            sessions: Some(sessions),
             status,
         };
     }
 
-    let [hero, agenda, system, docker, worktrees, sessions] = Layout::vertical([
+    let [hero, agenda, system, docker, worktrees] = Layout::vertical([
         Constraint::Length(12),
         Constraint::Length(5),
-        Constraint::Length(9),
+        Constraint::Length(14),
         Constraint::Length(5),
-        Constraint::Fill(2),
         Constraint::Fill(1),
     ])
     .areas(main);
@@ -83,7 +80,6 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
         docker: Some(docker),
         worktrees: Some(worktrees),
         system: Some(system),
-        sessions: Some(sessions),
         status,
     }
 }

@@ -32,7 +32,9 @@ Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 | `Tab` / `Shift+Tab` | alterna o painel em foco |
 | `t` / `T` | próximo / anterior tema (o último fica lembrado) |
 | `x` | dispensa o aviso da barra de status |
+| `← →` (Worktrees/Claude) | troca entre as abas Worktrees e Claude |
 | `↑↓` `j k` `g G` (Worktrees) | escolhe a worktree |
+| `D` (Worktrees) | exclui a worktree: `y` no primeiro aviso, Enter no segundo |
 | `Enter` (Worktrees) | sai do cockpit e vai para a pasta da worktree |
 | `C` (Worktrees) | abre `claude --continue` numa aba nova, já na worktree; o cockpit continua aberto |
 | `/` (Worktrees) | filtra por nome ou branch (`Enter` aplica, `Esc` limpa) |
@@ -76,7 +78,11 @@ Em terminal sem truecolor, as cores são convertidas para a paleta de 256. O Win
 
 ## Sistema e detector de travamento
 
-O painel Sistema mostra CPU e load, memória, swap, pressão (PSI), discos, rede da interface da rota padrão, ping e os maiores ofensores de CPU e memória, agrupados por nome.
+No topo do painel Sistema ficam duas caixas:
+- **CPU:** barra empilhada por tipo de uso (usuário, sistema, nice, espera de E/S, steal) com legenda, tempo ocioso, temperatura quando há sensor (no WSL não há), carga de 1, 5 e 15 min com o percentual sobre os núcleos, e o total de processos e threads.
+- **Memória:** barra empilhada com apps (memória dos programas), kernel, compartilhada, comprimida (zswap) e cache de arquivos, o quanto está em uso, a pressão (baixa, média ou alta, pelo PSI), livre, disponível e swap.
+
+Embaixo das caixas, o painel mostra pressão (PSI), discos, rede da interface da rota padrão, ping e os maiores ofensores de CPU e memória, agrupados por nome.
 
 | Métrica | Amarelo | Vermelho piscando |
 |---|---|---|
@@ -130,9 +136,13 @@ As duas teclas mostram antes o que vai rodar e só executam com `y`.
 
 ## Worktrees e conversas do Claude
 
-O painel Worktrees varre as pastas de `[worktrees].workspaces` (padrão: `~`, dois níveis) atrás de repositórios git e lista as worktrees de cada um: branch, arquivos alterados (`✎`), commits à frente e atrás do upstream (`↑↓`), idade do último commit, tamanho em disco e as conversas do Claude abertas nela (`◆` esperando você, `⠿` trabalhando, `$` rodando shell, `●` parada).
+Worktrees e Claude ficam no mesmo painel, em duas abas trocadas com `← →`. O título mostra quantas worktrees e conversas há, o aviso de conversas esperando você e o resumo dos limites do plano (`5h 43% · semana 28%`), que fica à vista nas duas abas.
 
-O painel Claude lista as conversas abertas (lidas de `~/.claude/sessions`), com as que esperam você primeiro, e as encerradas nas últimas 24 h, que o `r` retoma. Cada conversa entra na worktree em que o Claude está de fato trabalhando, lida da transcrição, mesmo que ele tenha sido aberto na raiz do repositório.
+A aba Worktrees varre as pastas de `[worktrees].workspaces` (padrão: `~`, dois níveis) atrás de repositórios git e lista as worktrees de cada um: branch, arquivos alterados (`✎`), commits à frente e atrás do upstream (`↑↓`), idade do último commit, tamanho em disco e as conversas do Claude abertas nela (`◆` esperando você, `⠿` trabalhando, `$` rodando shell, `●` parada).
+
+O `D` exclui a worktree selecionada com `git worktree remove`, em dois passos. O primeiro aviso mostra a pasta e a branch e continua com `y`. O segundo diz o que se perde, como os arquivos sem commit e as conversas do Claude abertas nela, e só apaga com Enter, para que dois `y` seguidos não apaguem nada por engano. Com alterações pendentes, o comando leva `--force`. A branch continua existindo, e a pasta principal do repositório não pode ser excluída por aqui.
+
+A aba Claude lista as conversas abertas (lidas de `~/.claude/sessions`), com as que esperam você primeiro, e as encerradas nas últimas 24 h, que o `r` retoma. Cada conversa entra na worktree em que o Claude está de fato trabalhando, lida da transcrição, mesmo que ele tenha sido aberto na raiz do repositório.
 
 Um programa não consegue mudar a pasta do shell que o abriu. Por isso o `Enter` depende da função instalada pelo `shell-init` (zsh, bash ou fish): o cockpit grava a pasta escolhida num arquivo temporário e a função faz o `cd` quando ele sai. Sem a função, o `Enter` copia o comando `cd …` para a área de transferência e mostra como ligá-la.
 

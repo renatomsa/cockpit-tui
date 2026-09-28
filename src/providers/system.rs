@@ -36,6 +36,46 @@ pub struct SystemSnapshot {
     pub uptime: u64,
     pub battery: Option<Battery>,
     pub danger: Danger,
+    /// Divisão do uso de CPU desde a última leitura (de /proc/stat).
+    pub cpu_parts: Option<CpuParts>,
+    pub cores: usize,
+    /// Threads do sistema inteiro (de /proc/loadavg).
+    pub threads: Option<u64>,
+    /// Temperatura da CPU em °C, quando há sensor (no WSL não há).
+    pub temp_c: Option<f64>,
+    pub mem_parts: Option<MemParts>,
+}
+
+/// Percentuais do tempo de CPU por tipo (somam ~100).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CpuParts {
+    pub user: f64,
+    pub nice: f64,
+    /// Kernel, incluindo interrupções.
+    pub system: f64,
+    /// Esperando disco/rede.
+    pub iowait: f64,
+    /// Roubado pelo hipervisor (VM, WSL).
+    pub steal: f64,
+    pub idle: f64,
+}
+
+/// Divisão da RAM, em bytes (de /proc/meminfo).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MemParts {
+    pub total: u64,
+    /// Memória anônima dos programas (heap, pilha).
+    pub apps: u64,
+    /// Do kernel e não recuperável (slab fixo, pilhas, tabelas de página).
+    pub kernel: u64,
+    /// Compartilhada (tmpfs, memória compartilhada entre processos).
+    pub shared: u64,
+    /// Cache de arquivos e buffers, que o kernel devolve quando falta.
+    pub cache: u64,
+    /// Guardada comprimida no zswap.
+    pub compressed: u64,
+    pub free: u64,
+    pub available: u64,
 }
 
 impl SystemSnapshot {
@@ -110,6 +150,7 @@ fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
     let mut sys = System::new();
     let mut eval = Evaluator::new(cfg.danger.clone());
     let mut net = NetCounter::default();
+    let mut last_stat: Option<[u64; 8]> = None;
     let mut snap = SystemSnapshot::default();
     // Sem `without_tasks` o sysinfo lista cada thread como processo (libuv-worker ×16…).
     // O exe é lido uma vez por processo: dá nome melhor que o `comm` ("MainThread", 15 chars).
@@ -135,6 +176,15 @@ fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
         snap.swap_used = sys.used_swap();
         snap.uptime = System::uptime();
         snap.psi = read_psi();
+        snap.cores = snap_cores(&sys);
+        if let Some(now) = fs::read_to_string("/proc/stat").ok().and_then(|s| parse_stat_cpu(&s)) {
+            if let Some(prev) = last_stat {
+                snap.cpu_parts = cpu_parts(&prev, &now);
+            }
+            last_stat = Some(now);
+        }
+        snap.threads = fs::read_to_string("/proc/loadavg").ok().and_then(|s| parse_loadavg_threads(&s));
+        snap.mem_parts = fs::read_to_string("/proc/meminfo").ok().and_then(|s| parse_meminfo(&s));
         snap.net = net.sample();
 
         // Processos no mesmo ritmo da CPU global: o sysinfo calcula o % de cada processo
@@ -155,6 +205,7 @@ fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
                 &cfg.disks,
             );
             snap.battery = read_battery(Path::new("/sys/class/power_supply"));
+            snap.temp_c = read_cpu_temp();
         }
 
         snap.danger = eval.eval(&Sample {
@@ -239,6 +290,88 @@ fn pick_disks(all: impl Iterator<Item = (String, u64, u64)>, wanted: &[String]) 
         out.sort_by(|a, b| a.mount.cmp(&b.mount));
     }
     out
+}
+
+fn snap_cores(sys: &System) -> usize {
+    sys.cpus().len().max(1)
+}
+
+/// Primeira linha de /proc/stat: user nice system idle iowait irq softirq steal (em ticks).
+fn parse_stat_cpu(s: &str) -> Option<[u64; 8]> {
+    let line = s.lines().next()?.strip_prefix("cpu ")?;
+    let v: Vec<u64> = line.split_whitespace().take(8).filter_map(|x| x.parse().ok()).collect();
+    (v.len() >= 5).then(|| {
+        let mut a = [0u64; 8];
+        a[..v.len()].copy_from_slice(&v);
+        a
+    })
+}
+
+fn cpu_parts(prev: &[u64; 8], now: &[u64; 8]) -> Option<CpuParts> {
+    let d: Vec<f64> = now.iter().zip(prev).map(|(n, p)| n.saturating_sub(*p) as f64).collect();
+    let total: f64 = d.iter().sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let pct = |x: f64| x * 100.0 / total;
+    Some(CpuParts {
+        user: pct(d[0]),
+        nice: pct(d[1]),
+        system: pct(d[2] + d[5] + d[6]),
+        idle: pct(d[3]),
+        iowait: pct(d[4]),
+        steal: pct(d[7]),
+    })
+}
+
+/// "1.71 0.73 0.55 3/744 834793" → 744 (entidades agendáveis = threads).
+fn parse_loadavg_threads(s: &str) -> Option<u64> {
+    s.split_whitespace().nth(3)?.split_once('/')?.1.parse().ok()
+}
+
+fn parse_meminfo(s: &str) -> Option<MemParts> {
+    let mut m = std::collections::HashMap::new();
+    for line in s.lines() {
+        let (k, rest) = line.split_once(':')?;
+        let kb: u64 = rest.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        m.insert(k.trim(), kb * 1024);
+    }
+    let g = |k: &str| m.get(k).copied().unwrap_or(0);
+    let total = g("MemTotal");
+    if total == 0 {
+        return None;
+    }
+    let shared = g("Shmem");
+    Some(MemParts {
+        total,
+        apps: g("AnonPages"),
+        kernel: g("SUnreclaim") + g("KernelStack") + g("PageTables"),
+        shared,
+        cache: (g("Buffers") + g("Cached") + g("SReclaimable")).saturating_sub(shared),
+        compressed: g("Zswap"),
+        free: g("MemFree"),
+        available: g("MemAvailable"),
+    })
+}
+
+/// Sensor da CPU: hwmon (coretemp/k10temp/zenpower/cpu_thermal) ou zona térmica do pacote.
+fn read_cpu_temp() -> Option<f64> {
+    let read_c = |p: &Path| fs::read_to_string(p).ok()?.trim().parse::<f64>().ok().map(|m| m / 1000.0);
+    for e in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
+        let name = fs::read_to_string(e.path().join("name")).unwrap_or_default();
+        if ["coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz"].contains(&name.trim())
+            && let Some(c) = read_c(&e.path().join("temp1_input"))
+        {
+            return Some(c);
+        }
+    }
+    for e in fs::read_dir("/sys/class/thermal").ok()?.flatten() {
+        let ty = fs::read_to_string(e.path().join("type")).unwrap_or_default();
+        if (ty.contains("x86_pkg_temp") || ty.contains("cpu")) && let Some(c) = read_c(&e.path().join("temp")) {
+            return Some(c);
+        }
+    }
+    None
 }
 
 fn read_psi() -> Option<Psi> {
@@ -334,6 +467,31 @@ mod tests {
         let s = "some avg10=7.37 avg60=2.77 avg300=0.91 total=12065007\nfull avg10=1.00 avg60=0 avg300=0 total=1\n";
         assert_eq!(parse_psi_avg10(s), Some(7.37));
         assert_eq!(parse_psi_avg10("lixo"), None);
+    }
+
+    #[test]
+    fn parses_cpu_breakdown() {
+        let a = parse_stat_cpu("cpu  100 0 50 800 10 0 20 0 0 0\ncpu0 1 2 3\n").unwrap();
+        let b = parse_stat_cpu("cpu  160 10 80 900 20 0 30 0 0 0\n").unwrap();
+        let p = cpu_parts(&a, &b).unwrap();
+        // deltas: user 60, nice 10, system 30+irq 0+softirq 10, idle 100, iowait 10 → 220
+        assert!((p.user - 60.0 * 100.0 / 220.0).abs() < 1e-9);
+        assert!((p.system - 40.0 * 100.0 / 220.0).abs() < 1e-9);
+        assert!((p.user + p.nice + p.system + p.idle + p.iowait + p.steal - 100.0).abs() < 1e-9);
+        assert!(cpu_parts(&a, &a).is_none());
+        assert_eq!(parse_loadavg_threads("1.71 0.73 0.55 3/744 834793"), Some(744));
+    }
+
+    #[test]
+    fn parses_memory_breakdown() {
+        let s = "MemTotal: 12249204 kB\nMemFree: 232816 kB\nMemAvailable: 5853332 kB\nBuffers: 547200 kB\nCached: 4458232 kB\nAnonPages: 5535596 kB\nShmem: 108188 kB\nSReclaimable: 939896 kB\nSUnreclaim: 148844 kB\nKernelStack: 12096 kB\nPageTables: 49732 kB\nHugePages_Total: 0\n";
+        let m = parse_meminfo(s).unwrap();
+        let kb = |x: u64| x * 1024;
+        assert_eq!(m.total, kb(12249204));
+        assert_eq!(m.apps, kb(5535596));
+        assert_eq!(m.kernel, kb(148844 + 12096 + 49732));
+        assert_eq!(m.cache, kb(547200 + 4458232 + 939896 - 108188));
+        assert_eq!(m.compressed, 0);
     }
 
     #[test]

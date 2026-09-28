@@ -87,6 +87,8 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
                 (st("22h", muted), "idade do último commit (s, m, h, d; mo = meses; a = anos)"),
                 (st("3.1G", muted), "espaço em disco (… = ainda calculando)"),
                 (st("sumiu", Style::new().fg(t.alert)), "a pasta foi apagada; `git worktree prune` limpa a lista"),
+                (st("D", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "exclui a worktree (y no 1º aviso, Enter no 2º); a branch continua"),
+                (st("← →", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "troca para a aba Claude"),
             ];
             v.extend(sessions(t));
             ("Worktrees", v)
@@ -134,7 +136,7 @@ fn entries(panel: Panel, t: &Theme, blink: bool) -> (&'static str, Vec<Entry>) {
 
 pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let t = s.theme();
-    let (title, list) = entries(s.focus, t, s.blink_on());
+    let (title, list) = entries(s.active_panel(), t, s.blink_on());
     let sym_w = list.iter().map(|(sp, _)| sp.content.chars().count()).max().unwrap_or(4) + 3;
     let mut lines: Vec<Line> = list
         .into_iter()
