@@ -208,7 +208,7 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
         None => {
             let hints: &[(&'static str, &'static str)] = match s.active_panel() {
                 _ if s.filter_editing => &[("digite", " para filtrar  "), ("↑↓", " escolher  "), ("Enter", " aplicar  "), ("Esc", " limpar")],
-                Panel::System => &[("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
+                Panel::System => &[("s", " velocidade  "), ("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Worktrees => &[
                     ("←→", " aba  "),
                     ("↑↓", " escolher  "),
@@ -261,6 +261,7 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ("X (Docker)", "derruba tudo: compose down --remove-orphans por projeto"),
         ("i", "legenda dos símbolos do painel em foco"),
         ("←→ ↑↓ (Sistema)", "escolhe coluna e processo"),
+        ("s (Sistema)", "mede a velocidade da internet (download e upload)"),
         ("K (Sistema)", "encerra o processo com SIGTERM (pede confirmação)"),
         ("x", "dispensa o aviso da barra"),
         ("?", "abre/fecha esta ajuda"),

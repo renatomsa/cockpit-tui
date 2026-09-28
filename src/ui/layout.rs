@@ -38,7 +38,8 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
         };
     }
 
-    let hero_h = if main.height >= 45 { 16 } else { 12 };
+    // 18 linhas: relógio grande + reunião + clima; em telas baixas, o clima some antes.
+    let hero_h = if main.height >= 45 { 18 } else { 12 };
 
     if area.width >= cfg.wide_min_cols {
         let left_pct = cfg.left_percent.clamp(30, 80);
@@ -101,7 +102,7 @@ mod tests {
         let a = compute(Rect::new(0, 0, 200, 50), &LayoutConfig::default());
         assert_eq!(a.status, Rect::new(0, 49, 200, 1));
         assert_eq!(a.hero.width, 124);
-        assert_eq!(a.hero.height, 16);
+        assert_eq!(a.hero.height, 18);
         assert_eq!(a.system.unwrap().x, 124);
     }
 }

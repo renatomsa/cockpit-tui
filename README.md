@@ -12,7 +12,7 @@ A arquitetura e o roadmap estão em [`PLAN.md`](PLAN.md).
 | F1 | Sistema (CPU, memória, swap, disco, rede, ping, PSI) + detector de travamento | ✅ |
 | F2 | Worktrees + sessões do Claude + seletor com `cd` | ✅ |
 | F3 | Google Calendar (OAuth2) + alerta vermelho | ✅ |
-| F4 | Wi-Fi do host (WSL), speedtest, clima, mapa | — |
+| F4 | Wi-Fi do host (WSL), speedtest, clima, mapa | ✅ |
 | F5 | `theme install`, hot-reload, `doctor` | — |
 
 ## Instalar e rodar
@@ -48,6 +48,7 @@ Para atualizar depois de um `git pull`: `cargo install --path . --force`.
 | `K` (Docker) | para o container selecionado (`docker stop`), com confirmação |
 | `X` (Docker) | derruba tudo: `docker compose down --remove-orphans` em cada projeto e `docker stop` nos soltos, com confirmação |
 | `←→` `↑↓` (painel Sistema) | escolhe a coluna (TOP CPU / TOP MEM) e o processo |
+| `s` (painel Sistema) | teste de velocidade (download e upload) |
 | `K` (painel Sistema) | encerra o processo com SIGTERM, depois de pedir confirmação |
 | `?` | ajuda |
 | `q` / `Ctrl+C` | sai |
@@ -81,6 +82,7 @@ Em terminal sem truecolor, as cores são convertidas para a paleta de 256. O Win
 No topo do painel Sistema ficam duas caixas:
 - **CPU:** barra empilhada por tipo de uso (usuário, sistema, nice, espera de E/S, steal) com legenda, tempo ocioso, temperatura quando há sensor (no WSL não há), carga de 1, 5 e 15 min com o percentual sobre os núcleos, e o total de processos e threads.
 - **Memória:** barra empilhada com apps (memória dos programas), kernel, compartilhada, comprimida (zswap) e cache de arquivos, o quanto está em uso, a pressão (baixa, média ou alta, pelo PSI), livre, disponível e swap.
+- **Rede:** tráfego agora, Wi-Fi (rede, sinal, padrão, canal, faixa e link), ping e o último teste de velocidade. No WSL, o tráfego e o Wi-Fi são os do Windows, lidos por um único PowerShell que fica aberto em segundo plano (~0,5 % de um núcleo e ~80 MB no Windows; desligue com `[network].wsl_host = false`). O `s` roda o teste de velocidade contra a Cloudflare, baixando 25 MB e enviando 10 MB, só quando você pede.
 - **Disco:** uma barra por volume (`/`, `/mnt/c`…), com percentual e espaço livre, e a leitura e a escrita em disco do momento, somando os discos do Linux.
 
 Embaixo das caixas, o painel mostra pressão (PSI), discos, rede da interface da rota padrão, ping e os maiores ofensores de CPU e memória, agrupados por nome.
@@ -161,6 +163,10 @@ O gasto dos subagentes disparados na rodada entra na soma. A transcrição é li
 O `C` e o `r` abrem uma aba nova em vez de fechar o cockpit. O terminal é detectado: tmux (janela nova), Windows Terminal pelo WSL (aba nova na mesma janela, via `wt.exe` e `wsl.exe --cd`), kitty, WezTerm ou gnome-terminal. O comando roda no seu shell de login interativo, para ter o mesmo PATH de sempre, e a aba continua aberta quando o Claude termina. Para outro terminal, defina `[terminal].new_tab` no config. Se nenhum for reconhecido, os dois voltam ao comportamento antigo: saem e rodam o Claude no shell atual pelo wrapper.
 
 Custo: o `git status` roda a cada 30 s (`refresh_secs`) no modo rápido, sem contar arquivos não rastreados; a contagem completa vai a cada 5 min ou quando algo muda no `.git`. O tamanho em disco é recalculado a cada 10 min em segundo plano.
+
+## Clima e mapa
+
+Abaixo da reunião, o relógio mostra o clima da cidade atual pela [Open-Meteo](https://open-meteo.com) (sem chave, a cada 15 min): a condição agora, a temperatura, a hora com mais chance de chuva nas próximas 12 h e a previsão das próximas horas. À direita do relógio, quando há largura, fica um mapa-múndi com a cidade marcada. Desligue com `[weather].enabled = false` e `[clock].map = false`. Em telas baixas, o clima some antes do relógio encolher.
 
 ## Cidade e fuso
 

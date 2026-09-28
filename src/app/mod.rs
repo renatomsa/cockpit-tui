@@ -47,6 +47,15 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
     providers::usage::spawn(state.config.claude.clone(), usage_tx);
     let (specs_tx, mut specs_rx) = watch::channel(Snapshot::default());
     providers::specs::spawn(specs_tx);
+    let (net_tx, mut net_rx) = watch::channel(Snapshot::default());
+    let host_net = state.config.network.wsl_host && crate::platform::is_wsl();
+    if host_net {
+        providers::hostnet::spawn(net_tx);
+    }
+    let mut net_alive = host_net;
+    let (wx_tx, mut wx_rx) = watch::channel(Snapshot::default());
+    providers::weather::spawn(state.config.weather.clone(), geo_rx.clone(), wx_tx);
+    let mut wx_alive = state.config.weather.enabled;
     let (docker_tx, mut docker_rx) = watch::channel(Snapshot::default());
     providers::docker::spawn(docker_tx);
     let (cal_tx, mut cal_rx) = watch::channel(Snapshot::default());
@@ -118,6 +127,14 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 Ok(()) => Action::Calendar(cal_rx.borrow_and_update().clone()),
                 Err(_) => { cal_alive = false; continue }
             },
+            changed = net_rx.changed(), if net_alive => match changed {
+                Ok(()) => Action::HostNet(net_rx.borrow_and_update().clone()),
+                Err(_) => { net_alive = false; continue }
+            },
+            changed = wx_rx.changed(), if wx_alive => match changed {
+                Ok(()) => Action::Weather(wx_rx.borrow_and_update().clone()),
+                Err(_) => { wx_alive = false; continue }
+            },
             Some(a) = act_rx.recv() => a,
         };
 
@@ -156,6 +173,15 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
             });
         }
         Effect::Copy(text) => crate::shell::osc52_copy(&text),
+        Effect::SpeedTest => {
+            let cfg = state.config.network.clone();
+            tokio::spawn(async move {
+                crate::providers::speedtest::run(cfg, |ev| {
+                    let _ = results.send(Action::Speed(ev));
+                })
+                .await;
+            });
+        }
         Effect::OpenUrl(url) => {
             tokio::task::spawn_blocking(move || {
                 let msg = match crate::platform::open_url(&url) {

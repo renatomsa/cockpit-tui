@@ -15,6 +15,9 @@ use crate::{
         docker::DockerSnapshot,
         geo::Geo,
         git::{Worktree, WorktreesSnapshot},
+        hostnet::HostNet,
+        speedtest::{Phase, SpeedResult},
+        weather::Weather,
         ping::PingSnapshot,
         specs::Specs,
         system::SystemSnapshot,
@@ -57,6 +60,14 @@ pub enum WtTab {
     #[default]
     Worktrees,
     Claude,
+}
+
+/// Teste de velocidade: o que está rodando agora e o último resultado.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpeedState {
+    pub running: Option<(Phase, f64)>,
+    pub last: Option<SpeedResult>,
+    pub error: Option<String>,
 }
 
 /// Coluna de processos selecionada no painel de sistema.
@@ -134,6 +145,10 @@ pub struct AppState {
     pub dismissed: HashSet<String>,
     pub agenda_sel: usize,
     pub wt_tab: WtTab,
+    /// Wi-Fi e tráfego do Windows (só no WSL).
+    pub host_net: Snapshot<HostNet>,
+    pub weather: Snapshot<Weather>,
+    pub speed: SpeedState,
     pub docker_sel: usize,
     /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
@@ -190,6 +205,9 @@ impl AppState {
             dismissed: HashSet::new(),
             agenda_sel: 0,
             wt_tab: WtTab::Worktrees,
+            host_net: Snapshot::default(),
+            weather: Snapshot::default(),
+            speed: SpeedState::default(),
             docker_sel: 0,
             wt_sessions: HashMap::new(),
             wt_sel: 0,

@@ -22,6 +22,8 @@ pub struct Config {
     pub claude: ClaudeConfig,
     pub terminal: TerminalConfig,
     pub calendar: CalendarConfig,
+    pub network: NetworkConfig,
+    pub weather: WeatherConfig,
 }
 
 impl Default for Config {
@@ -37,6 +39,8 @@ impl Default for Config {
             claude: ClaudeConfig::default(),
             terminal: TerminalConfig::default(),
             calendar: CalendarConfig::default(),
+            network: NetworkConfig::default(),
+            weather: WeatherConfig::default(),
         }
     }
 }
@@ -56,11 +60,13 @@ pub struct ClockConfig {
     pub seconds: bool,
     pub hour12: bool,
     pub extra: Vec<ExtraClock>,
+    /// Mapa-múndi com a cidade marcada, ao lado do relógio (quando há largura).
+    pub map: bool,
 }
 
 impl Default for ClockConfig {
     fn default() -> Self {
-        Self { seconds: true, hour12: false, extra: Vec::new() }
+        Self { seconds: true, hour12: false, extra: Vec::new(), map: true }
     }
 }
 
@@ -260,6 +266,38 @@ impl Default for CalendarConfig {
             snooze_minutes: 5,
             show_declined: false,
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkConfig {
+    /// No WSL, lê o Wi-Fi e o tráfego do Windows (um PowerShell fica aberto em segundo plano).
+    pub wsl_host: bool,
+    /// Tamanho do download e do upload do teste de velocidade (tecla `s`), em MB.
+    pub speedtest_down_mb: u64,
+    pub speedtest_up_mb: u64,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self { wsl_host: true, speedtest_down_mb: 25, speedtest_up_mb: 10 }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WeatherConfig {
+    /// Clima da cidade atual (Open-Meteo, sem chave).
+    pub enabled: bool,
+    pub refresh_minutes: u64,
+    /// Quantas horas da previsão aparecem na linha de baixo.
+    pub hours: usize,
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self {
+        Self { enabled: true, refresh_minutes: 15, hours: 5 }
     }
 }
 

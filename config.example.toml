@@ -13,6 +13,7 @@ locale = "pt-BR"
 [clock]
 seconds = true
 hour12 = false
+map = true              # mapa-múndi com a cidade, ao lado do relógio
 
 # Relógios extras, mostrados ao lado da cidade atual.
 [[clock.extra]]
@@ -89,6 +90,16 @@ show_declined = false
 # {dir}, {cmd} e {title} são substituídos já com aspas; roda com `sh -c`.
 # new_tab = "alacritty --working-directory {dir} -e zsh -lic {cmd}"
 new_tab = ""
+
+[network]
+wsl_host = true         # no WSL: Wi-Fi e tráfego reais do Windows
+speedtest_down_mb = 25  # tamanho do teste de velocidade (tecla `s` no painel Sistema)
+speedtest_up_mb = 10
+
+[weather]
+enabled = true          # clima da cidade atual (open-meteo.com, sem chave)
+refresh_minutes = 15
+hours = 5               # horas da previsão mostradas
 
 [layout]
 wide_min_cols = 110     # a partir daqui, duas colunas

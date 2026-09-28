@@ -119,6 +119,151 @@ pub fn draw_disk(f: &mut Frame, area: Rect, s: &AppState, d: &SystemSnapshot) ->
     h
 }
 
+/// Caixa Rede: tráfego agora, Wi-Fi (no WSL, o do Windows), ping e teste de velocidade.
+pub fn draw_net(f: &mut Frame, area: Rect, s: &AppState, d: &SystemSnapshot) -> u16 {
+    if area.height < 3 {
+        return 0;
+    }
+    let t = s.theme();
+    let loc = s.config.locale;
+    let muted = Style::new().fg(t.muted);
+    let fg = Style::new().fg(t.fg);
+    let w = area.width.saturating_sub(4) as usize;
+    let rate = |b: f64| format!("{}/s", size(b as u64, loc));
+    let mbps = |m: f64| if m >= 100.0 { format!("{m:.0} Mbps") } else { format!("{} Mbps", dec(m, 1, loc)) };
+    let host = s.host_net.data.as_ref();
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Tráfego: o do Windows inteiro quando há, senão o da interface do Linux.
+    let (rx, tx, origin) = match (host, &d.net) {
+        (Some(h), _) => (Some(h.rx), Some(h.tx), "todo o Windows".to_string()),
+        (None, Some(n)) => (Some(n.rx), Some(n.tx), n.iface.clone()),
+        (None, None) => (None, None, String::new()),
+    };
+    match (rx, tx) {
+        (Some(rx), Some(tx)) => {
+            let mut l = vec![
+                Span::styled(format!("↓ {:<10}", rate(rx)), Style::new().fg(t.spark).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("↑ {:<10}", rate(tx)), Style::new().fg(t.highlight).add_modifier(Modifier::BOLD)),
+                Span::styled(origin, muted),
+            ];
+            if host.is_some()
+                && let Some(n) = &d.net
+            {
+                let extra = format!("  · WSL ↓ {} ↑ {}", rate(n.rx), rate(n.tx));
+                if Line::from(l.clone()).width() + extra.chars().count() <= w {
+                    l.push(Span::styled(extra, muted));
+                }
+            }
+            lines.push(Line::from(l));
+        }
+        _ => lines.push(Line::styled("medindo…", muted)),
+    }
+
+    // Wi-Fi
+    if let Some(wifi) = host.and_then(|h| h.wifi.as_ref()) {
+        let mut l = vec![Span::styled(wifi.ssid.clone(), Style::new().fg(t.fg).add_modifier(Modifier::BOLD))];
+        if let Some(sig) = wifi.signal {
+            let color = if sig >= 70 { t.ok } else if sig >= 40 { t.warn } else { t.alert };
+            let cells = 10usize;
+            let on = (sig as usize * cells).div_ceil(100).min(cells);
+            l.extend([
+                Span::styled("  sinal ", muted),
+                Span::styled("█".repeat(on), Style::new().fg(color)),
+                Span::styled("█".repeat(cells - on), Style::new().fg(t.border)),
+                Span::styled(format!(" {sig}%"), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+            ]);
+        }
+        let mut info: Vec<String> = Vec::new();
+        if let Some(r) = &wifi.radio {
+            info.push(r.clone());
+        }
+        if let Some(c) = wifi.channel {
+            info.push(format!("canal {c}"));
+        }
+        if let Some(b) = wifi.band_label() {
+            info.push(b);
+        }
+        if let Some(r) = wifi.rx_mbps.or(host.and_then(|h| h.link_mbps)) {
+            info.push(format!("link {}", mbps(r)));
+        }
+        let tail = format!("  · {}", info.join(" · "));
+        if Line::from(l.clone()).width() + tail.chars().count() <= w {
+            l.push(Span::styled(tail, muted));
+        } else {
+            lines.push(Line::from(l));
+            l = vec![Span::styled(info.join(" · "), muted)];
+        }
+        lines.push(Line::from(l));
+    } else if let Some(h) = host {
+        let link = h.link_mbps.map(|m| format!(" · link {}", mbps(m))).unwrap_or_default();
+        lines.push(Line::styled(format!("{}{link}", h.adapter), muted));
+    }
+
+    // Ping
+    match &s.ping.data {
+        Some(p) => {
+            let (txt, color) = match p.last_ms {
+                Some(ms) => (format!("{ms:.0}ms"), if ms < 60.0 { t.ok } else if ms < 150.0 { t.warn } else { t.alert }),
+                None => ("sem resposta".into(), t.alert),
+            };
+            let jit = p.jitter_ms.map(|j| format!(" ±{j:.0}")).unwrap_or_default();
+            lines.push(Line::from(vec![
+                Span::styled("ping ", muted),
+                Span::styled(txt, Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{jit} · perda {:.0}% · {}", p.loss_pct, p.target.trim_end_matches(":443")), muted),
+            ]));
+        }
+        None => lines.push(Line::styled("ping medindo…", muted)),
+    }
+
+    // Teste de velocidade
+    let sp = &s.speed;
+    let line = match (&sp.running, &sp.last) {
+        (Some((phase, now)), _) => {
+            let what = match phase {
+                crate::providers::speedtest::Phase::Download => "download",
+                crate::providers::speedtest::Phase::Upload => "upload",
+            };
+            let so_far = if *now > 0.0 { format!(" {}", mbps(*now)) } else { String::new() };
+            Line::from(vec![Span::styled(format!("velocidade: medindo {what}…"), Style::new().fg(t.accent)), Span::styled(so_far, fg)])
+        }
+        (None, Some(r)) => Line::from(vec![
+            Span::styled("velocidade ", muted),
+            Span::styled(format!("↓ {}", mbps(r.down_mbps)), Style::new().fg(t.spark).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled(format!("↑ {}", mbps(r.up_mbps)), Style::new().fg(t.highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" · há {} · s mede de novo", super::ago((s.now - r.at).num_seconds())), muted),
+        ]),
+        (None, None) => Line::from(vec![
+            Span::styled("velocidade: ", muted),
+            Span::styled("s", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" mede download e upload (no painel Sistema)", muted),
+        ]),
+    };
+    lines.push(line);
+    if let Some(e) = &sp.error {
+        lines.push(Line::styled(truncate(&format!("último teste falhou: {e}"), w), Style::new().fg(t.warn)));
+    }
+
+    let right = match host {
+        Some(h) => match h.wifi.as_ref() {
+            Some(wf) => format!(" Wi-Fi · {} ", wf.ssid),
+            None => format!(" {} ", h.adapter),
+        },
+        None => d.net.as_ref().map(|n| format!(" {} ", n.iface)).unwrap_or_default(),
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.border))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(" Rede ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))
+        .title_top(Line::from(Span::styled(right, muted)).right_aligned());
+    let h = (lines.len() as u16 + 2).min(area.height);
+    f.render_widget(Paragraph::new(lines).block(block), Rect { height: h, ..area });
+    h
+}
+
 fn boxed(t: &Theme, title: &'static str, pct: f64, lvl: Level) -> Block<'static> {
     let border = match lvl {
         Level::Critical => t.alert,

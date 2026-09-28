@@ -47,7 +47,9 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     // Caixas de CPU e Memória no topo, a de Disco logo abaixo; o resto fica embaixo delas.
     let mut boxes_h = super::sysboxes::draw(f, inner, s, d);
     let rest = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
-    boxes_h += super::sysboxes::draw_disk(f, rest, s, d) + 1;
+    boxes_h += super::sysboxes::draw_disk(f, rest, s, d);
+    let rest = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
+    boxes_h += super::sysboxes::draw_net(f, rest, s, d) + 1;
     let inner = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
     if inner.height == 0 {
         return;
@@ -173,41 +175,6 @@ fn metric_rows(s: &AppState, d: &SystemSnapshot) -> Vec<(u8, Line<'static>)> {
         ));
     }
     rows.push(spacer());
-
-    // ── Rede
-    match &d.net {
-        Some(n) => {
-            rows.push((
-                1,
-                Line::from(vec![
-                    label(t, "REDE", Level::Ok),
-                    Span::styled(format!("↓ {:<10}", rate(n.rx)), Style::new().fg(t.spark)),
-                    Span::styled(format!("↑ {:<10}", rate(n.tx)), Style::new().fg(t.spark)),
-                    muted(t, n.iface.clone()),
-                ]),
-            ));
-        }
-        None => rows.push((1, Line::from(vec![label(t, "REDE", Level::Ok), muted(t, "medindo…".into())]))),
-    }
-    match &s.ping.data {
-        Some(p) => {
-            let (txt, color) = match p.last_ms {
-                Some(ms) => (format!("{ms:.0}ms"), if ms < 60.0 { t.ok } else if ms < 150.0 { t.warn } else { t.alert }),
-                None => ("sem resposta".into(), t.alert),
-            };
-            let jit = p.jitter_ms.map(|j| format!("±{j:.0}")).unwrap_or_default();
-            let host = p.target.trim_end_matches(":443").to_string();
-            rows.push((
-                1,
-                Line::from(vec![
-                    label(t, "PING", Level::Ok),
-                    Span::styled(format!("{txt:<12}"), Style::new().fg(color).add_modifier(Modifier::BOLD)),
-                    muted(t, format!("{jit:<5} perda {:.0}%  {host}", p.loss_pct)),
-                ]),
-            ));
-        }
-        None => rows.push((1, Line::from(vec![label(t, "PING", Level::Ok), muted(t, "medindo…".into())]))),
-    }
 
     // ── Rodapé
     let mut info = format!("ligado há {}", uptime(d.uptime));
@@ -340,10 +307,6 @@ pub(crate) fn bytes(b: u64) -> String {
         i += 1;
     }
     if i == 0 || v >= 100.0 { format!("{v:.0}{}", U[i]) } else { format!("{v:.1}{}", U[i]) }
-}
-
-fn rate(bps: f64) -> String {
-    format!("{}/s", bytes(bps as u64))
 }
 
 fn uptime(secs: u64) -> String {

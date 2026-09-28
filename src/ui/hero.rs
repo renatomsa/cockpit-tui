@@ -6,8 +6,12 @@ use ratatui::{
     Frame,
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{
+        Block, Paragraph,
+        canvas::{Canvas, Map, MapResolution},
+    },
 };
 
 use super::{bigclock::BigText, panel_block, truncate};
@@ -15,7 +19,7 @@ use crate::{
     alert::{Alert, Level},
     app::state::{AppState, Panel},
     locale,
-    providers::calendar::not_connected_hint,
+    providers::{calendar::not_connected_hint, weather},
 };
 
 /// Cores do hero: as do tema, ou tudo em `alert_fg` sobre `alert_bg` no alerta.
@@ -66,13 +70,30 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
 
     // No alerta, a última linha vira o rodapé com as teclas.
     let footer_h = u16::from(red && inner.height >= 6);
-    let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1 + footer_h), ..inner };
+    let mut body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1 + footer_h), ..inner };
+
+    // Mapa à direita, se houver largura e coordenadas.
+    let coords = s.geo.data.as_ref().and_then(|g| Some((g.lat?, g.lon?)));
+    if cfg.map
+        && inner.width >= 100
+        && body.height >= 6
+        && let Some((lat, lon)) = coords
+    {
+        let map_w = (inner.width * 30 / 100).clamp(30, 52);
+        let map = Rect { x: body.x + body.width - map_w, width: map_w, ..body };
+        body.width -= map_w + 1;
+        draw_map(f, map, s, lat, lon, &p, red);
+    }
+
     let clock_text = locale::big_time(&local, cfg.seconds, cfg.hour12);
     const TEXT_LINES: u16 = 5; // lugar, respiro, respiro, data, reunião
     let scale = BigText::fit(&clock_text, body.width.saturating_sub(2), body.height.saturating_sub(TEXT_LINES), 3);
     let clock_h = scale.map_or(1, |sc| BigText::size(&clock_text, sc).1);
+    // O relógio tem prioridade; o clima ocupa o que sobrar (até 2 linhas).
+    let wx = weather_lines(s, &p, body.width as usize);
+    let wx_h = (wx.len() as u16).min(body.height.saturating_sub(TEXT_LINES + clock_h));
 
-    let total = (TEXT_LINES + clock_h).min(body.height);
+    let total = (TEXT_LINES + clock_h + wx_h).min(body.height);
     let mut y = body.y + body.height.saturating_sub(total) / 2;
     let line_at = |y: u16| Rect { x: body.x, y, width: body.width, height: 1 };
     let bottom = body.y + body.height;
@@ -114,6 +135,10 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     );
     y += 1;
     centered(f, y, meeting_line(s, &alert, &p, body.width as usize));
+    for l in wx.into_iter().take(wx_h as usize) {
+        y += 1;
+        centered(f, y, l);
+    }
 
     if footer_h == 1 {
         let key = |k: &'static str| Span::styled(k, Style::new().fg(t.alert_fg).add_modifier(Modifier::BOLD));
@@ -126,6 +151,77 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
         let r = Rect { y: inner.y + inner.height - 1, height: 1, ..inner };
         f.render_widget(Paragraph::new(Line::from(spans)), r);
     }
+}
+
+/// Mapa-múndi em braille com a cidade marcada.
+fn draw_map(f: &mut Frame, area: Rect, s: &AppState, lat: f64, lon: f64, p: &Palette, red: bool) {
+    let t = s.theme();
+    let bg = if red { t.alert_bg } else { t.bg };
+    let city = s.city_label();
+    let (x0, x1, y0, y1) = (-180.0, 180.0, -58.0, 84.0);
+    // O rótulo vai à direita do ponto; perto da borda leste, vai para a esquerda.
+    let deg_per_cell = (x1 - x0) / area.width.max(1) as f64;
+    let label_deg = (city.chars().count() as f64 + 2.0) * deg_per_cell;
+    let label_x = if lon + label_deg + 2.0 * deg_per_cell > x1 { lon - label_deg - deg_per_cell } else { lon + 2.0 * deg_per_cell };
+    let dot = Style::new().fg(if red { t.alert_fg } else { t.accent }).add_modifier(Modifier::BOLD);
+    let label = if red {
+        Style::new().fg(t.alert_bg).bg(t.alert_fg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(t.bg).bg(t.accent).add_modifier(Modifier::BOLD)
+    };
+    let land = p.muted;
+    let canvas = Canvas::default()
+        .marker(Marker::Braille)
+        .background_color(bg)
+        .x_bounds([x0, x1])
+        .y_bounds([y0, y1])
+        .paint(move |ctx| {
+            ctx.draw(&Map { color: land, resolution: MapResolution::High });
+            ctx.layer();
+            ctx.print(lon, lat.clamp(y0, y1), Span::styled("●", dot));
+            ctx.print(label_x, lat.clamp(y0, y1), Span::styled(format!(" {city} "), label));
+        });
+    f.render_widget(canvas, area);
+}
+
+/// "Garoa 24°C · chuva 87% às 1h" e "0h 24° 86%   1h 24° 87%   …".
+fn weather_lines(s: &AppState, p: &Palette, w: usize) -> Vec<Line<'static>> {
+    let t = s.theme();
+    let Some(wx) = &s.weather.data else { return Vec::new() };
+    let fg = Style::new().fg(p.fg);
+    let muted = Style::new().fg(p.muted);
+    let mut first = vec![
+        Span::styled(weather::describe(wx.code, wx.is_day).to_string(), fg),
+        Span::styled(format!(" {:.0}°C", wx.temp), Style::new().fg(p.fg).add_modifier(Modifier::BOLD)),
+    ];
+    if let Some((h, pct)) = wx.rain_peak {
+        first.push(Span::styled(format!(" · chuva {pct}% às {h}h"), fg));
+    }
+    let mut hours: Vec<Span> = Vec::new();
+    let mut used = 0;
+    for h in wx.hours.iter().take(s.config.weather.hours) {
+        let item = format!("{}h {:.0}° {}", h.hour, h.temp, h.precip.map(|x| format!("{x}%")).unwrap_or_default());
+        let add = item.chars().count() + if hours.is_empty() { 0 } else { 3 };
+        if used + add > w {
+            break;
+        }
+        if !hours.is_empty() {
+            hours.push(Span::raw("   "));
+        }
+        let rainy = h.precip.is_some_and(|x| x >= 30);
+        hours.push(Span::styled(format!("{}h ", h.hour), muted));
+        hours.push(Span::styled(format!("{:.0}° ", h.temp), fg));
+        hours.push(Span::styled(
+            h.precip.map(|x| format!("{x}%")).unwrap_or_default(),
+            Style::new().fg(if rainy && p.fg != t.alert_fg { t.spark } else { p.muted }),
+        ));
+        used += add;
+    }
+    let mut out = vec![Line::from(first)];
+    if !hours.is_empty() {
+        out.push(Line::from(hours));
+    }
+    out
 }
 
 /// "▶ 16:00 Daily · em 4 min", "▶ agora: Daily · começou há 2 min" ou o estado da agenda.

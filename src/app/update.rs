@@ -12,6 +12,9 @@ use crate::{
         docker::{self, DockerCmd, DockerSnapshot},
         geo::Geo,
         git::WorktreesSnapshot,
+        hostnet::HostNet,
+        speedtest::SpeedEvent,
+        weather::Weather,
         ping::PingSnapshot,
         specs::Specs,
         system::SystemSnapshot,
@@ -35,6 +38,9 @@ pub enum Action {
     Specs(Snapshot<Specs>),
     Docker(Snapshot<DockerSnapshot>),
     Calendar(Snapshot<CalendarSnapshot>),
+    HostNet(Snapshot<HostNet>),
+    Weather(Snapshot<Weather>),
+    Speed(SpeedEvent),
     /// Mensagem para a barra de status (ex.: resultado de um efeito).
     Notice(String),
 }
@@ -45,6 +51,8 @@ pub enum Effect {
     PersistTheme(String),
     /// SIGTERM, já confirmado pelo usuário.
     Kill(KillTarget),
+    /// Roda o teste de velocidade; o progresso volta como `Action::Speed`.
+    SpeedTest,
     /// Abre uma URL no navegador (link da reunião).
     OpenUrl(String),
     /// `git worktree remove` (ou `prune`), já confirmado nos dois avisos.
@@ -107,6 +115,28 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
                 .and_then(|id| list.iter().position(|x| x.id == id))
                 .unwrap_or(s.sess_sel)
                 .min(list.len().saturating_sub(1));
+            Outcome::redraw()
+        }
+        Action::HostNet(snap) => {
+            s.host_net = snap;
+            Outcome::redraw()
+        }
+        Action::Weather(snap) => {
+            s.weather = snap;
+            Outcome::redraw()
+        }
+        Action::Speed(ev) => {
+            match ev {
+                SpeedEvent::Progress(phase, mbps) => s.speed.running = Some((phase, mbps)),
+                SpeedEvent::Done(r) => {
+                    s.speed = crate::app::state::SpeedState { running: None, last: Some(r), error: None };
+                }
+                SpeedEvent::Failed(e) => {
+                    s.speed.running = None;
+                    s.speed.error = Some(e.clone());
+                    s.notices.insert(0, format!("teste de velocidade falhou: {e}"));
+                }
+            }
             Outcome::redraw()
         }
         Action::Calendar(snap) => {
@@ -203,6 +233,14 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
     }
     if s.filter_editing {
         return on_filter_key(s, k.code);
+    }
+    if s.focus == Panel::System && k.code == KeyCode::Char('s') {
+        if s.speed.running.is_some() {
+            return Outcome::default();
+        }
+        s.speed.running = Some((crate::providers::speedtest::Phase::Download, 0.0));
+        s.speed.error = None;
+        return Outcome { redraw: true, effect: Some(Effect::SpeedTest) };
     }
     if s.focus == Panel::System && on_system_key(s, k.code) {
         return Outcome::redraw();
@@ -876,6 +914,21 @@ mod tests {
         assert_eq!(out.effect, Some(Effect::Copy("https://meet.google.com/abc".into())));
         let out = update(&mut s, key(KeyCode::Char('o')));
         assert_eq!(out.effect, Some(Effect::OpenUrl("https://meet.google.com/abc".into())));
+    }
+
+    #[test]
+    fn s_starts_one_speedtest_at_a_time() {
+        use crate::providers::speedtest::{Phase, SpeedEvent, SpeedResult};
+        let mut s = state();
+        s.focus = Panel::System;
+        let out = update(&mut s, key(KeyCode::Char('s')));
+        assert_eq!(out.effect, Some(Effect::SpeedTest));
+        assert!(update(&mut s, key(KeyCode::Char('s'))).effect.is_none(), "já rodando");
+        update(&mut s, Action::Speed(SpeedEvent::Progress(Phase::Upload, 0.0)));
+        assert_eq!(s.speed.running, Some((Phase::Upload, 0.0)));
+        let r = SpeedResult { down_mbps: 41.0, up_mbps: 21.0, at: s.now };
+        update(&mut s, Action::Speed(SpeedEvent::Done(r.clone())));
+        assert_eq!((s.speed.running, s.speed.last.clone()), (None, Some(r)));
     }
 
     #[test]
