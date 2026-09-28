@@ -41,6 +41,7 @@ const TOKENS: &[&str] = &[
     "alert_fg", "spark", "gauge_low", "gauge_mid", "gauge_high", "clock",
 ];
 
+/// Ordem do ciclo do `t`: escuros, depois claros, e por fim o que segue o terminal.
 const BUILTIN: &[(&str, &str)] = &[
     ("dracula", include_str!("builtin/dracula.toml")),
     ("catppuccin-mocha", include_str!("builtin/catppuccin-mocha.toml")),
@@ -49,6 +50,22 @@ const BUILTIN: &[(&str, &str)] = &[
     ("gruvbox-dark", include_str!("builtin/gruvbox-dark.toml")),
     ("one-dark", include_str!("builtin/one-dark.toml")),
     ("solarized-dark", include_str!("builtin/solarized-dark.toml")),
+    ("darcula", include_str!("builtin/darcula.toml")),
+    ("jetbrains-dark", include_str!("builtin/jetbrains-dark.toml")),
+    ("monokai", include_str!("builtin/monokai.toml")),
+    ("monokai-pro", include_str!("builtin/monokai-pro.toml")),
+    ("github-dark", include_str!("builtin/github-dark.toml")),
+    ("vscode-dark", include_str!("builtin/vscode-dark.toml")),
+    ("rose-pine", include_str!("builtin/rose-pine.toml")),
+    ("kanagawa", include_str!("builtin/kanagawa.toml")),
+    ("everforest", include_str!("builtin/everforest.toml")),
+    ("ayu-dark", include_str!("builtin/ayu-dark.toml")),
+    ("night-owl", include_str!("builtin/night-owl.toml")),
+    ("material", include_str!("builtin/material.toml")),
+    ("intellij-light", include_str!("builtin/intellij-light.toml")),
+    ("github-light", include_str!("builtin/github-light.toml")),
+    ("catppuccin-latte", include_str!("builtin/catppuccin-latte.toml")),
+    ("solarized-light", include_str!("builtin/solarized-light.toml")),
     ("terminal", include_str!("builtin/terminal.toml")),
 ];
 
@@ -285,6 +302,49 @@ mod tests {
             }
             assert_eq!(Theme::parse(src, name).unwrap().name, *name);
         }
+    }
+
+    /// Luminância relativa (WCAG 2.x) de uma cor #rrggbb.
+    fn luminance(c: Color) -> Option<f64> {
+        let Color::Rgb(r, g, b) = c else { return None };
+        let ch = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        Some(0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b))
+    }
+
+    fn contrast(a: Color, b: Color) -> Option<f64> {
+        let (x, y) = (luminance(a)?, luminance(b)?);
+        Some((x.max(y) + 0.05) / (x.min(y) + 0.05))
+    }
+
+    #[test]
+    fn builtins_are_readable() {
+        // texto ≥ 4,5 (WCAG AA); destaque, ok/aviso/alerta ≥ 3 (texto em negrito);
+        // apagado ≥ 2,5 (secundário, de propósito mais fraco); texto do alerta ≥ 3
+        let mut bad = Vec::new();
+        for (name, src) in BUILTIN {
+            let t = Theme::parse(src, name).unwrap();
+            let checks = [
+                ("fg/bg", t.fg, t.bg, 4.5),
+                ("clock/bg", t.clock, t.bg, 4.5),
+                ("accent/bg", t.accent, t.bg, 3.0),
+                ("muted/bg", t.muted, t.bg, 2.5),
+                ("alert/bg", t.alert, t.bg, 3.0),
+                ("ok/bg", t.ok, t.bg, 2.5),
+                ("warn/bg", t.warn, t.bg, 2.5),
+                ("alert_fg/alert_bg", t.alert_fg, t.alert_bg, 3.0),
+            ];
+            for (what, a, b, min) in checks {
+                if let Some(c) = contrast(a, b)
+                    && c < min
+                {
+                    bad.push(format!("{name} {what} = {c:.2} (< {min})"));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "contraste baixo:\n{}", bad.join("\n"));
     }
 
     #[test]

@@ -1,8 +1,14 @@
 # Config do cockpit — copie para ~/.config/cockpit/config.toml
 # (ou rode `cockpit config init`). Toda chave é opcional.
 
-# Tema inicial. Embutidos: dracula, catppuccin-mocha, tokyo-night, nord,
-# gruvbox-dark, one-dark, solarized-dark, terminal.
+# Tema inicial. Embutidos (lista completa: `cockpit theme list`):
+#   escuros   dracula catppuccin-mocha tokyo-night nord gruvbox-dark one-dark solarized-dark
+#             rose-pine kanagawa everforest ayu-dark night-owl material
+#   JetBrains darcula jetbrains-dark intellij-light
+#   Monokai   monokai monokai-pro
+#   editores  github-dark github-light vscode-dark
+#   claros    intellij-light github-light catppuccin-latte solarized-light
+#   terminal  (só cores ANSI, segue o tema do terminal)
 # Temas extras: ~/.config/cockpit/themes/<nome>.toml. A tecla `t` troca ao vivo
 # e o último escolhido fica lembrado em ~/.local/state/cockpit/state.toml.
 theme = "dracula"

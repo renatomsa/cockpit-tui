@@ -81,7 +81,7 @@ Tudo fica em `~/.config/cockpit/config.toml`, cujo modelo está em [`config.exam
 Ajustes mais comuns:
 
 ```toml
-theme = "dracula"                 # dracula, catppuccin-mocha, tokyo-night, nord, gruvbox-dark, one-dark, solarized-dark, terminal
+theme = "dracula"                 # veja a lista abaixo, ou `cockpit theme list`
 
 [location]                        # o IP costuma errar a cidade
 city = "Rio de Janeiro"
@@ -95,7 +95,20 @@ tz = "America/New_York"
 workspaces = ["~"]                # onde procurar repositórios
 ```
 
-**Temas** são arquivos `.toml` com tokens de cor (`bg fg muted border accent highlight ok warn alert alert_bg alert_fg spark gauge_low gauge_mid gauge_high clock`). O que faltar herda de outro token. `cockpit theme install` valida o tema antes de instalar, e um cockpit aberto já o mostra no ciclo do `t`.
+**Temas embutidos** (`t` percorre todos, na ordem):
+
+| Estilo | Temas |
+|---|---|
+| Escuros | `dracula` `catppuccin-mocha` `tokyo-night` `nord` `gruvbox-dark` `one-dark` `solarized-dark` `rose-pine` `kanagawa` `everforest` `ayu-dark` `night-owl` `material` |
+| JetBrains | `darcula` (clássico) `jetbrains-dark` (interface nova) `intellij-light` |
+| Monokai | `monokai` `monokai-pro` |
+| Editores | `github-dark` `github-light` `vscode-dark` |
+| Claros | `intellij-light` `github-light` `catppuccin-latte` `solarized-light` |
+| Terminal | `terminal` (só as 16 cores ANSI, segue o tema do seu terminal) |
+
+Todos passam num teste de contraste (WCAG): texto sobre fundo ≥ 4,5 e destaques e alertas ≥ 3.
+
+**Temas próprios** são arquivos `.toml` com tokens de cor (`bg fg muted border accent highlight ok warn alert alert_bg alert_fg spark gauge_low gauge_mid gauge_high clock`). O que faltar herda de outro token. `cockpit theme install` valida o tema antes de instalar, e um cockpit aberto já o mostra no ciclo do `t`.
 
 ## Google Calendar
 

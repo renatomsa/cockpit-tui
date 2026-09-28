@@ -3,7 +3,7 @@ name = "nord"
 [colors]
 bg         = "#2e3440"
 fg         = "#eceff4"
-muted      = "#616e88"
+muted      = "#7b88a1"
 border     = "#434c5e"
 accent     = "#88c0d0"
 highlight  = "#b48ead"

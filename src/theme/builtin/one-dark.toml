@@ -3,7 +3,7 @@ name = "one-dark"
 [colors]
 bg         = "#282c34"
 fg         = "#abb2bf"
-muted      = "#5c6370"
+muted      = "#7f848e"
 border     = "#3e4451"
 accent     = "#61afef"
 highlight  = "#c678dd"
