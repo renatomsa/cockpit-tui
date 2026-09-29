@@ -315,6 +315,18 @@ impl AppState {
         self.alert().level == crate::alert::Level::Imminent
     }
 
+    /// Está de dia na cidade atual? Pelo nascer e pôr do sol das coordenadas; sem
+    /// elas, pelo que a Open-Meteo disse; sem as duas, das 6h às 18h.
+    pub fn is_day(&self) -> bool {
+        if let Some((lat, lon)) = self.geo.data.as_ref().and_then(|g| Some((g.lat?, g.lon?))) {
+            return crate::solar::is_day(lat, lon, self.now);
+        }
+        if let Some(w) = &self.weather.data {
+            return w.is_day;
+        }
+        (6..18).contains(&chrono::Timelike::hour(&self.local_now()))
+    }
+
     pub fn events(&self) -> &[Event] {
         self.calendar.data.as_ref().map(|d| d.events.as_slice()).unwrap_or(&[])
     }

@@ -125,13 +125,15 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     }
     y += clock_h + 1;
 
+    // ☀ de dia, ☾ à noite (pelo nascer e pôr do sol da cidade).
+    let (sky, sky_color) = if s.is_day() { ("☀ ", if red { p.fg } else { t.warn }) } else { ("☾ ", if red { p.fg } else { t.accent }) };
     centered(
         f,
         y,
-        Line::styled(
-            format!("{} · {}", locale::long_date(&local, s.config.locale), locale::utc_offset(&local)),
-            Style::new().fg(p.fg),
-        ),
+        Line::from(vec![
+            Span::styled(sky, Style::new().fg(sky_color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} · {}", locale::long_date(&local, s.config.locale), locale::utc_offset(&local)), Style::new().fg(p.fg)),
+        ]),
     );
     y += 1;
     centered(f, y, meeting_line(s, &alert, &p, body.width as usize));

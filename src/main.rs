@@ -8,6 +8,7 @@ mod locale;
 mod platform;
 mod providers;
 mod shell;
+mod solar;
 mod terminal;
 mod theme;
 mod ui;

@@ -43,6 +43,7 @@ fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
                 (st(" Recife 16:15 ", Style::new().fg(t.accent).add_modifier(Modifier::REVERSED | Modifier::BOLD)), "cidade atual (pelo IP ou pelo config) e a hora local"),
                 (st("Orlando 15:15", fg), "relógios extras, de [[clock.extra]] no config"),
                 (st("UTC-03:00", fg), "fuso da cidade atual"),
+                (st("☀ / ☾", Style::new().fg(t.warn)), "dia ou noite na cidade, pelo nascer e pôr do sol de hoje"),
                 (st("geo ipinfo.io", muted), "(barra de status) de onde veio a cidade: config, cache ou serviço de IP"),
                 (st("▶ 16:00 Daily · em 4 min", Style::new().fg(t.warn).add_modifier(Modifier::BOLD)), "próxima reunião; amarelo quando falta pouco"),
                 (st("Garoa 24°C", fg), "clima agora (Open-Meteo); ao lado, a hora com mais chance de chuva"),
