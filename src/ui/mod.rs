@@ -2,11 +2,12 @@
 
 mod agenda;
 mod bigclock;
+mod desktop;
 mod docker;
 pub(crate) mod hero;
 pub mod layout;
 mod legend;
-mod sessions;
+pub(crate) mod sessions;
 mod system;
 mod sysboxes;
 mod workspace;
@@ -222,7 +223,8 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
                 ],
                 Panel::Agenda => &[("↑↓", " escolher  "), ("o", " abrir a chamada  "), ("y", " copiar link  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Docker => &[("↑↓", " escolher  "), ("K", " parar container  "), ("X", " derrubar tudo  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
-                Panel::Sessions => &[("←→", " aba  "), ("↑↓", " escolher  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
+                Panel::Sessions if s.wt_tab == crate::app::state::WtTab::Desktop => &[("←→", " aba  "), ("↑↓", " escolher  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
+                Panel::Sessions => &[("←→", " aba  "), ("↑↓", " escolher  "), ("a", " permitir  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 _ => &[("Tab", " foco  "), ("t", " tema  "), ("i", " legenda  "), ("?", " ajuda  "), ("q", " sair")],
             };
             let mut spans = vec![Span::raw(" ")];
@@ -259,6 +261,7 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ("z (alerta)", "adia o alerta vermelho de reunião; qualquer outra tecla o para"),
         ("K (Docker)", "para o container selecionado (docker stop)"),
         ("X (Docker)", "derruba tudo: compose down --remove-orphans por projeto"),
+        ("a", "permite desta vez o pedido de permissão do Claude Code (com o hook instalado)"),
         ("i", "legenda dos símbolos do painel em foco"),
         ("←→ ↑↓ (Sistema)", "escolhe coluna e processo"),
         ("s (Sistema)", "mede a velocidade da internet (download e upload)"),

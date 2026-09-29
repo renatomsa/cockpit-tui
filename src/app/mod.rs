@@ -42,7 +42,13 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
     let (wt_tx, mut wt_rx) = watch::channel(Snapshot::default());
     providers::git::spawn(state.config.worktrees.clone(), wt_tx);
     let (sess_tx, mut sess_rx) = watch::channel(Snapshot::default());
-    providers::claude::spawn(state.config.claude.clone(), sess_tx);
+    providers::claude::spawn(state.config.claude.clone(), state.paths.state_dir.clone(), sess_tx);
+    let (desk_tx, mut desk_rx) = watch::channel(Snapshot::default());
+    let desktop = crate::platform::is_wsl();
+    if desktop {
+        providers::desktop::spawn(desk_tx);
+    }
+    let mut desk_alive = desktop;
     let (usage_tx, mut usage_rx) = watch::channel(Snapshot::default());
     providers::usage::spawn(state.config.claude.clone(), usage_tx);
     let (specs_tx, mut specs_rx) = watch::channel(Snapshot::default());
@@ -173,6 +179,10 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 while cfg_rx.try_recv().is_ok() {}
                 continue;
             }
+            changed = desk_rx.changed(), if desk_alive => match changed {
+                Ok(()) => Action::Desktop(desk_rx.borrow_and_update().clone()),
+                Err(_) => { desk_alive = false; continue }
+            },
             Some(a) = act_rx.recv() => a,
         };
 
@@ -211,6 +221,16 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
             });
         }
         Effect::Copy(text) => crate::shell::osc52_copy(&text),
+        Effect::Permission(p, allow) => {
+            let state_dir = state.paths.state_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                let msg = match crate::claude_hook::decide(&state_dir, &p, allow) {
+                    Ok(()) => format!("{} {}: {}", if allow { "permitido" } else { "negado" }, p.tool, crate::ui::truncate(&p.summary, 60)),
+                    Err(e) => format!("não consegui responder o pedido: {e}"),
+                };
+                let _ = results.send(Action::Notice(msg));
+            });
+        }
         Effect::SpeedTest => {
             let cfg = state.config.network.clone();
             tokio::spawn(async move {

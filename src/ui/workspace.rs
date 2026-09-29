@@ -9,7 +9,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use super::{panel_block, sessions, worktrees};
+use super::{desktop, panel_block, sessions, worktrees};
 use crate::{
     app::state::{AppState, Panel, WtTab},
     providers::usage::Severity,
@@ -34,9 +34,17 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
         Span::raw(" "),
         tab(format!("Worktrees {n_wt}"), s.wt_tab == WtTab::Worktrees),
         Span::styled("  │  ", Style::new().fg(t.border)),
-        tab(format!("Claude {n_claude}"), s.wt_tab == WtTab::Claude),
+        tab(format!("Claude Code {n_claude}"), s.wt_tab == WtTab::Claude),
     ];
-    if waiting > 0 {
+    if crate::platform::is_wsl() {
+        let n_desk = s.desktop.data.as_ref().map_or(0, |d| d.sessions.iter().filter(|x| x.status.is_some()).count());
+        title.push(Span::styled("  │  ", Style::new().fg(t.border)));
+        title.push(tab(format!("Claude Desktop {n_desk}"), s.wt_tab == WtTab::Desktop));
+    }
+    let pending = s.pending_permissions().len();
+    if pending > 0 {
+        title.push(Span::styled(format!("  ◆ {pending} pedindo permissão · a permite"), Style::new().fg(t.warn).add_modifier(Modifier::BOLD)));
+    } else if waiting > 0 {
         title.push(Span::styled(format!(" ◆ {waiting} esperando você"), Style::new().fg(t.warn).add_modifier(Modifier::BOLD)));
     }
     title.push(Span::raw(" "));
@@ -78,5 +86,6 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     match s.wt_tab {
         WtTab::Worktrees => worktrees::body(f, inner, s),
         WtTab::Claude => sessions::body(f, inner, s),
+        WtTab::Desktop => desktop::body(f, inner, s),
     }
 }

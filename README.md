@@ -32,7 +32,7 @@ O repositório é privado. A variável `CARGO_NET_GIT_FETCH_WITH_CLI` faz o carg
 | **Relógio** | cidade (pelo IP ou fixa no config) e relógios extras; próxima reunião; clima e próximas horas (Open-Meteo); mapa-múndi com a cidade |
 | **Agenda** | reuniões das próximas 48 h, com link da chamada |
 | **Docker** | containers rodando (o `docker ps`, sem `-a`): saúde, portas, projeto compose |
-| **Worktrees · Claude** | duas abas: worktrees dos repositórios, com branch, alterações, ↑↓, idade e tamanho; conversas do Claude abertas e encerradas há pouco, com tokens da rodada e os limites de 5 h e da semana |
+| **Worktrees · Claude** | três abas: worktrees dos repositórios (branch, alterações, ↑↓, idade, tamanho); **Claude Code**, com as conversas abertas e encerradas há pouco, tokens da rodada e os limites de 5 h e da semana; **Claude Desktop** (no WSL), com as sessões de Code e Cowork do app do Windows |
 | **Sistema** | caixas de CPU, Memória, Disco e Rede com detalhe por tipo de uso; Wi-Fi e tráfego do Windows no WSL; maiores ofensores de CPU e memória; especificações da máquina |
 
 Alertas:
@@ -52,10 +52,11 @@ A tecla `i` mostra a legenda dos símbolos do painel em foco.
 | alerta de reunião | qualquer tecla · `z` · `o` | para o alerta · adia 5 min · abre a chamada |
 | Agenda | `o` · `y` | abre a chamada · copia o link |
 | Docker | `K` · `X` | para o container · derruba tudo (`compose down --remove-orphans` por projeto), com confirmação |
-| Worktrees | `← →` | troca entre as abas Worktrees e Claude |
+| Worktrees | `← →` | troca entre as abas Worktrees, Claude Code e Claude Desktop |
 | | `Enter` · `C` | vai para a pasta · abre `claude --continue` numa aba nova |
 | | `/` · `D` | filtra · exclui a worktree (dois avisos: `y` e depois Enter) |
-| Claude | `Enter` · `r` | vai para a pasta · retoma uma conversa encerrada numa aba nova |
+| Claude Code | `Enter` · `r` | vai para a pasta · retoma uma conversa encerrada numa aba nova |
+| qualquer painel | `a` | permite desta vez o pedido de permissão (o da conversa selecionada, ou o único pendente) |
 | Sistema | `s` | teste de velocidade (download e upload) |
 | | `← →` `↑↓` · `K` | escolhe processo · encerra com SIGTERM, com confirmação |
 
@@ -68,8 +69,17 @@ A tecla `i` mostra a legenda dos símbolos do painel em foco.
 | `cockpit config init` / `config path` | cria o config / mostra onde ficam config, temas, estado e log |
 | `cockpit calendar add <endereço iCal>` / `list` / `remove <n>` | conecta a agenda pelo endereço iCal |
 | `cockpit auth google` | conecta o Google Calendar por OAuth (alternativa) |
+| `cockpit claude-hook install` / `uninstall` / `status` | liga o "permitir desta vez" pelo cockpit |
 | `cockpit shell-init zsh\|bash\|fish` | função que faz o Enter trocar de pasta |
 | `cockpit --demo-agenda` | reuniões de exemplo, para ver o alerta sem o Google |
+
+## Permitir desta vez
+
+Com o hook instalado (`cockpit claude-hook install`, que acrescenta um hook `PermissionRequest` ao `~/.claude/settings.json` e guarda um backup), as conversas do Claude Code que pedirem permissão aparecem no cockpit com o que vão fazer, por exemplo `◆ Bash: git push origin main`. O `a` permite **só aquela vez**.
+
+O diálogo continua aparecendo no terminal, e quem responder primeiro vale. Se você responder lá, o hook percebe e sai sozinho. Cada pedido tem um código aleatório, e só uma resposta com esse código vale; os pedidos ficam numa pasta privada (`~/.local/state/cockpit/permissions`, 0700). O hook vale para as sessões abertas depois da instalação. As sessões do Claude Desktop aparecem na aba própria, mas só para leitura: os pedidos delas se respondem no app.
+
+A aba Claude Desktop lê do disco do Windows as sessões de Code e as tarefas do modo agente (Cowork) do app, dos últimos 7 dias, com o estado ao vivo e os tokens da rodada. As conversas comuns de chat ficam no servidor do claude.ai e não aparecem.
 
 ## Configuração
 

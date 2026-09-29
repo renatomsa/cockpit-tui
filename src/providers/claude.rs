@@ -64,6 +64,8 @@ pub struct Session {
     pub updated_at: Option<DateTime<Utc>>,
     /// Tokens da rodada atual (ou da última, se parada).
     pub turn: Option<TurnStats>,
+    /// Pedido de permissão que o cockpit pode aprovar (com o hook instalado).
+    pub pending: Option<crate::claude_hook::Pending>,
 }
 
 #[derive(Deserialize, Default)]
@@ -93,8 +95,10 @@ pub fn claude_dir(cfg: &ClaudeConfig) -> PathBuf {
     }
 }
 
-pub fn spawn(cfg: ClaudeConfig, tx: watch::Sender<Snapshot<SessionsSnapshot>>) {
+pub fn spawn(cfg: ClaudeConfig, state_dir: PathBuf, tx: watch::Sender<Snapshot<SessionsSnapshot>>) {
     let dir = claude_dir(&cfg);
+    let perm_dir = crate::claude_hook::dir(&state_dir);
+    let _ = fs::create_dir_all(&perm_dir);
     tokio::spawn(async move {
         let (ev_tx, mut ev_rx) = mpsc::channel::<()>(1);
         let _watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -102,17 +106,28 @@ pub fn spawn(cfg: ClaudeConfig, tx: watch::Sender<Snapshot<SessionsSnapshot>>) {
                 let _ = ev_tx.try_send(());
             }
         })
-        .and_then(|mut w| w.watch(&dir.join("sessions"), RecursiveMode::NonRecursive).map(|_| w))
+        .and_then(|mut w| {
+            w.watch(&dir.join("sessions"), RecursiveMode::NonRecursive)?;
+            // pedidos de permissão do hook aparecem aqui
+            let _ = w.watch(&perm_dir, RecursiveMode::NonRecursive);
+            Ok(w)
+        })
         .map_err(|e| tracing::warn!("sem inotify em {}/sessions: {e}", dir.display()))
         .ok();
 
         let mut cache = TranscriptCache::default();
         loop {
-            let (d, c) = (dir.clone(), cfg.clone());
+            let (d, c, st) = (dir.clone(), cfg.clone(), state_dir.clone());
             let taken = std::mem::take(&mut cache);
             let (snap, back) = tokio::task::spawn_blocking(move || {
                 let mut cache = taken;
-                let snap = read_sessions(&d, &c, &mut cache, SystemTime::now());
+                let mut snap = read_sessions(&d, &c, &mut cache, SystemTime::now());
+                if let Ok(s) = snap.as_mut() {
+                    let pend = crate::claude_hook::pending(&st);
+                    for sess in &mut s.live {
+                        sess.pending = pend.iter().find(|p| p.claude_pid == sess.pid).cloned();
+                    }
+                }
                 (snap, cache)
             })
             .await
@@ -209,6 +224,7 @@ fn build(f: &SessionFile, pid: u32, id: String, t: Option<&Info>) -> Session {
         summary: summary.map(|s| one_line(&s, 300)),
         updated_at: updated,
         turn: t.and_then(|t| t.turn.clone()),
+        pending: None,
     }
 }
 

@@ -123,6 +123,19 @@ pub fn run(config_path: Option<std::path::PathBuf>, paths: &Paths) -> anyhow::Re
         Err(_) => warn("claude", format!("sem {}", sessions.display()), "abra o `claude` uma vez; ou ajuste [claude].dir"),
     });
 
+    let settings = dir.join("settings.json");
+    checks.push(if crate::claude_hook::installed(&settings) {
+        ok("permissão", "hook instalado: `a` no cockpit permite desta vez os pedidos do Claude Code")
+    } else {
+        info("permissão", "hook não instalado; para aprovar pedidos pelo cockpit: `cockpit claude-hook install`")
+    });
+    if platform::is_wsl() {
+        checks.push(match providers::desktop::find_app_dir() {
+            Some((app, _)) => ok("desktop", format!("Claude Desktop em {}", app.display())),
+            None => info("desktop", "Claude Desktop não encontrado no Windows (a aba fica vazia)"),
+        });
+    }
+
     // ── WSL
     if platform::is_wsl() {
         checks.push(if which("powershell.exe") {

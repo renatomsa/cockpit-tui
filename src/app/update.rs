@@ -9,6 +9,7 @@ use crate::{
         Snapshot,
         calendar::CalendarSnapshot,
         claude::{SessionsSnapshot, Status},
+        desktop::DesktopSnapshot,
         docker::{self, DockerCmd, DockerSnapshot},
         geo::Geo,
         git::WorktreesSnapshot,
@@ -38,6 +39,7 @@ pub enum Action {
     Specs(Snapshot<Specs>),
     Docker(Snapshot<DockerSnapshot>),
     Calendar(Snapshot<CalendarSnapshot>),
+    Desktop(Snapshot<DesktopSnapshot>),
     HostNet(Snapshot<HostNet>),
     Weather(Snapshot<Weather>),
     Speed(SpeedEvent),
@@ -59,6 +61,8 @@ pub enum Effect {
     PersistTheme(String),
     /// SIGTERM, já confirmado pelo usuário.
     Kill(KillTarget),
+    /// Responde um pedido de permissão do Claude Code (true = permitir desta vez).
+    Permission(crate::claude_hook::Pending, bool),
     /// Roda o teste de velocidade; o progresso volta como `Action::Speed`.
     SpeedTest,
     /// Abre uma URL no navegador (link da reunião).
@@ -164,6 +168,12 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
                     s.notices.insert(0, format!("teste de velocidade falhou: {e}"));
                 }
             }
+            Outcome::redraw()
+        }
+        Action::Desktop(snap) => {
+            s.desktop = snap;
+            let n = s.desktop.data.as_ref().map_or(0, |d| d.sessions.len());
+            s.desktop_sel = s.desktop_sel.min(n.saturating_sub(1));
             Outcome::redraw()
         }
         Action::Calendar(snap) => {
@@ -283,11 +293,27 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
         return out;
     }
     if s.focus == Panel::Worktrees && matches!(k.code, KeyCode::Left | KeyCode::Right) {
-        s.wt_tab = match s.wt_tab {
-            WtTab::Worktrees => WtTab::Claude,
-            WtTab::Claude => WtTab::Worktrees,
-        };
+        const TABS: [WtTab; 3] = [WtTab::Worktrees, WtTab::Claude, WtTab::Desktop];
+        let i = TABS.iter().position(|t| *t == s.wt_tab).unwrap_or(0);
+        let next = if k.code == KeyCode::Right { (i + 1) % 3 } else { (i + 2) % 3 };
+        s.wt_tab = TABS[next];
         return Outcome::redraw();
+    }
+    // `a`: permitir desta vez o pedido de permissão. Na aba Claude Code vale o da
+    // conversa selecionada; em qualquer outro lugar, o único pendente (se houver um só).
+    if k.code == KeyCode::Char('a') && !s.pending_permissions().is_empty() {
+        let selected = (s.active_panel() == Panel::Sessions && s.wt_tab == WtTab::Claude)
+            .then(|| s.session_list().get(s.sess_sel).and_then(|x| x.pending.clone()))
+            .flatten();
+        let pend = s.pending_permissions();
+        let target = selected.or_else(|| (pend.len() == 1).then(|| pend[0].clone()));
+        return match target {
+            Some(p) => Outcome { redraw: true, effect: Some(Effect::Permission(p, true)) },
+            None => {
+                s.notices.insert(0, format!("{} pedidos de permissão: escolha a conversa na aba Claude Code e aperte a", pend.len()));
+                Outcome::redraw()
+            }
+        };
     }
     if s.active_panel() == Panel::Worktrees
         && let Some(out) = on_worktrees_key(s, k.code)
@@ -467,6 +493,10 @@ fn on_worktrees_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
 }
 
 fn on_sessions_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
+    if s.wt_tab == WtTab::Desktop {
+        let n = s.desktop.data.as_ref().map_or(0, |d| d.sessions.len());
+        return step(&mut s.desktop_sel, n, code).then(Outcome::redraw);
+    }
     let n = s.session_list().len();
     if step(&mut s.sess_sel, n, code) {
         return Some(Outcome::redraw());
@@ -977,6 +1007,56 @@ mod tests {
         update(&mut s, Action::Reloaded(Box::new(Reloaded { config: bad, themes })));
         assert_eq!(s.config.worktrees.depth, 5);
         assert!(s.notices[0].contains("mantive"));
+    }
+
+    fn with_pending(s: &mut AppState, pids: &[u32]) {
+        use crate::{claude_hook::Pending, providers::claude::Session};
+        let live = pids
+            .iter()
+            .enumerate()
+            .map(|(i, pid)| Session {
+                id: format!("s{i}"),
+                pid: *pid,
+                status: Status::Waiting,
+                pending: Some(Pending { id: format!("p{i}"), nonce: "n".into(), claude_pid: *pid, tool: "Bash".into(), summary: format!("cmd{i}"), created_at: i as i64, ..Default::default() }),
+                ..Default::default()
+            })
+            .collect();
+        update(s, Action::Sessions(Snapshot::ok(SessionsSnapshot { live, recent: vec![] })));
+    }
+
+    #[test]
+    fn a_allows_the_only_pending_request_from_anywhere() {
+        let mut s = state();
+        with_pending(&mut s, &[10]);
+        s.focus = Panel::Docker;
+        let out = update(&mut s, key(KeyCode::Char('a')));
+        assert!(matches!(out.effect, Some(Effect::Permission(ref p, true)) if p.id == "p0"));
+    }
+
+    #[test]
+    fn a_with_several_pending_uses_the_selected_conversation() {
+        let mut s = state();
+        with_pending(&mut s, &[10, 11]);
+        s.focus = Panel::Docker;
+        let out = update(&mut s, key(KeyCode::Char('a')));
+        assert!(out.effect.is_none() && s.notices[0].contains("2 pedidos"));
+        s.focus = Panel::Worktrees;
+        s.wt_tab = WtTab::Claude;
+        update(&mut s, key(KeyCode::Down));
+        let out = update(&mut s, key(KeyCode::Char('a')));
+        assert!(matches!(out.effect, Some(Effect::Permission(ref p, true)) if p.id == "p1"));
+    }
+
+    #[test]
+    fn arrows_cycle_three_tabs() {
+        let mut s = state();
+        for want in [WtTab::Claude, WtTab::Desktop, WtTab::Worktrees] {
+            update(&mut s, key(KeyCode::Right));
+            assert_eq!(s.wt_tab, want);
+        }
+        update(&mut s, key(KeyCode::Left));
+        assert_eq!(s.wt_tab, WtTab::Desktop);
     }
 
     #[test]

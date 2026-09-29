@@ -1,5 +1,6 @@
 mod alert;
 mod app;
+mod claude_hook;
 mod config;
 mod danger;
 mod doctor;
@@ -57,6 +58,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: CalendarCmd,
     },
+    /// Hook de permissão do Claude Code (o que permite aprovar pedidos pelo cockpit).
+    /// Sem subcomando, é o próprio hook (o Claude o chama). Instale com `claude-hook install`.
+    ClaudeHook {
+        #[command(subcommand)]
+        cmd: Option<HookCmd>,
+    },
     /// Conecta serviços externos.
     Auth {
         #[command(subcommand)]
@@ -73,6 +80,16 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Acrescenta o hook ao ~/.claude/settings.json (com backup).
+    Install,
+    /// Tira o hook do ~/.claude/settings.json.
+    Uninstall,
+    /// Diz se o hook está instalado.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -142,6 +159,39 @@ fn main() -> Result<()> {
         Some(Cmd::Config { cmd: ConfigCmd::Init }) => config_init(cli.config.unwrap_or_else(|| paths.config_file())),
         Some(Cmd::Auth { cmd: AuthCmd::Google { client_secret } }) => auth_google(cli.config, client_secret, &paths),
         Some(Cmd::Doctor) => doctor::run(cli.config, &paths),
+        Some(Cmd::ClaudeHook { cmd }) => {
+            let cfg = config::load(cli.config).config;
+            let claude_dir = providers::claude::claude_dir(&cfg.claude);
+            let settings = claude_dir.join("settings.json");
+            match cmd {
+                None => {
+                    claude_hook::run_hook(&paths.state_dir, &claude_dir);
+                    Ok(())
+                }
+                Some(HookCmd::Install) => {
+                    if claude_hook::install(&settings)? {
+                        println!("hook instalado em {} (backup em settings.json.cockpit-backup)", settings.display());
+                        println!("Vale para as sessões do Claude Code abertas a partir de agora. Quando uma pedir permissão,");
+                        println!("aperte `a` no cockpit para permitir desta vez; o diálogo no terminal continua valendo.");
+                    } else {
+                        println!("o hook já está instalado em {}", settings.display());
+                    }
+                    Ok(())
+                }
+                Some(HookCmd::Uninstall) => {
+                    if claude_hook::uninstall(&settings)? {
+                        println!("hook removido de {}", settings.display());
+                    } else {
+                        println!("o hook não estava instalado");
+                    }
+                    Ok(())
+                }
+                Some(HookCmd::Status) => {
+                    println!("{}", if claude_hook::installed(&settings) { "instalado" } else { "não instalado (`cockpit claude-hook install`)" });
+                    Ok(())
+                }
+            }
+        }
         Some(Cmd::Calendar { cmd }) => calendar_cmd(cmd, cli.config, &paths),
         Some(Cmd::ShellInit { shell }) => {
             print!("{}", shell::init_script(&shell)?);

@@ -140,8 +140,8 @@ pub(crate) fn tokens(n: u64) -> String {
 }
 
 /// "agora há 3m · 3.2k saída · 1.4M processados · contexto 145k · 2 subagentes"
-fn turn_line(s: &AppState, t: &Theme, sess: &Session, turn: &TurnStats, w: usize) -> Line<'static> {
-    let running = matches!(sess.status, Status::Busy | Status::Shell);
+pub(crate) fn turn_line(s: &AppState, t: &Theme, status: Option<Status>, turn: &TurnStats, w: usize) -> Line<'static> {
+    let running = matches!(status, Some(Status::Busy | Status::Shell));
     let muted = Style::new().fg(t.muted);
     let num = Style::new().fg(t.fg);
     let head = match (running, turn.started_at) {
@@ -210,7 +210,19 @@ fn live_lines(s: &AppState, t: &Theme, sess: &Session, w: usize, selected: bool)
     };
     let detail = Span::styled(truncate(&detail.content, w.saturating_sub(2)), detail.style);
     let mut second = Line::from(vec![Span::raw("  "), detail]);
-    let mut third = sess.turn.as_ref().filter(|x| x.calls > 0).map(|turn| turn_line(s, t, sess, turn, w));
+    // Pedido de permissão aprovável pelo cockpit: mostra o que vai rodar e a tecla.
+    if let Some(p) = &sess.pending {
+        let key = " a permitir desta vez ";
+        let what = format!("◆ {}: ", p.tool);
+        let room = w.saturating_sub(2 + what.chars().count() + key.chars().count() + 1);
+        second = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(what, Style::new().fg(t.warn).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", truncate(&p.summary, room)), Style::new().fg(t.fg).add_modifier(Modifier::BOLD)),
+            Span::styled(key, Style::new().fg(t.bg).bg(t.warn).add_modifier(Modifier::BOLD)),
+        ]);
+    }
+    let mut third = sess.turn.as_ref().filter(|x| x.calls > 0).map(|turn| turn_line(s, t, Some(sess.status), turn, w));
     if selected {
         let bg = Style::new().bg(t.border);
         first = first.style(bg);

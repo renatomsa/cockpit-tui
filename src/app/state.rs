@@ -12,6 +12,7 @@ use crate::{
         Snapshot,
         calendar::{CalendarSnapshot, Event},
         claude::{Session, SessionsSnapshot, Status},
+        desktop::DesktopSnapshot,
         docker::DockerSnapshot,
         geo::Geo,
         git::{Worktree, WorktreesSnapshot},
@@ -59,7 +60,10 @@ impl Panel {
 pub enum WtTab {
     #[default]
     Worktrees,
+    /// Claude Code (CLI) no WSL.
     Claude,
+    /// Claude Desktop (Windows).
+    Desktop,
 }
 
 /// Teste de velocidade: o que está rodando agora e o último resultado.
@@ -145,6 +149,8 @@ pub struct AppState {
     pub dismissed: HashSet<String>,
     pub agenda_sel: usize,
     pub wt_tab: WtTab,
+    pub desktop: Snapshot<DesktopSnapshot>,
+    pub desktop_sel: usize,
     /// Wi-Fi e tráfego do Windows (só no WSL).
     pub host_net: Snapshot<HostNet>,
     pub weather: Snapshot<Weather>,
@@ -208,6 +214,8 @@ impl AppState {
             dismissed: HashSet::new(),
             agenda_sel: 0,
             wt_tab: WtTab::Worktrees,
+            desktop: Snapshot::default(),
+            desktop_sel: 0,
             host_net: Snapshot::default(),
             weather: Snapshot::default(),
             speed: SpeedState::default(),
@@ -238,7 +246,7 @@ impl AppState {
     /// Painel que recebe as teclas: no painel de worktrees, depende da aba.
     pub fn active_panel(&self) -> Panel {
         match (self.focus, self.wt_tab) {
-            (Panel::Worktrees, WtTab::Claude) => Panel::Sessions,
+            (Panel::Worktrees, WtTab::Claude | WtTab::Desktop) => Panel::Sessions,
             (p, _) => p,
         }
     }
@@ -349,6 +357,13 @@ impl AppState {
     /// Vivas e depois recentes, na ordem em que aparecem no painel.
     pub fn session_list(&self) -> Vec<&Session> {
         self.sessions.data.as_ref().map(|d| d.live.iter().chain(&d.recent).collect()).unwrap_or_default()
+    }
+
+    /// Pedidos de permissão que o cockpit pode aprovar agora, do mais antigo ao mais novo.
+    pub fn pending_permissions(&self) -> Vec<&crate::claude_hook::Pending> {
+        let mut v: Vec<_> = self.sessions.data.as_ref().map(|d| d.live.iter().filter_map(|s| s.pending.as_ref()).collect()).unwrap_or_default();
+        v.sort_by_key(|p| p.created_at);
+        v
     }
 
     pub fn waiting_count(&self) -> usize {

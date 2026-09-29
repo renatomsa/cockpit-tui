@@ -125,6 +125,8 @@ fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
                 (st("›", muted), "último pedido que você fez"),
                 (st("v360/cfs", muted), "repositório/worktree em que a conversa está"),
                 (st("há 8m", muted), "desde a última mudança de status"),
+                (st(" a permitir desta vez ", Style::new().fg(t.bg).bg(t.warn).add_modifier(Modifier::BOLD)), "pedido de permissão (Bash, Edit…): `a` aprova só esta vez; o terminal continua valendo"),
+                (st("Claude Desktop", fg), "aba ao lado: sessões de Code e Cowork do app do Windows (só leitura)"),
                 (st("Sessão 5h ━━", Style::new().fg(t.gauge_low)), "quanto do limite de 5 h do plano já foi usado (o mesmo do /usage)"),
                 (st("Semana ━━", Style::new().fg(t.gauge_low)), "quanto do limite semanal já foi usado; ao lado, quando reinicia"),
                 (st("⟳ rodando", Style::new().fg(t.accent)), "tokens da rodada em andamento, desde o seu último pedido"),

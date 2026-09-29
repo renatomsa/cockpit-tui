@@ -3,6 +3,7 @@
 
 pub mod calendar;
 pub mod claude;
+pub mod desktop;
 pub mod docker;
 pub mod geo;
 pub mod git;
