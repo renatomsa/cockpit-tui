@@ -13,7 +13,11 @@ use super::{panel_block, truncate};
 use crate::{
     app::state::{AppState, Panel, ProcCol},
     danger::Level,
-    providers::system::{ProcGroup, SystemSnapshot},
+    locale,
+    providers::{
+        system::{ProcGroup, SystemSnapshot},
+        usage::{Limit, Severity},
+    },
     theme::Theme,
 };
 
@@ -64,6 +68,11 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let specs = spec_lines(s, w, h);
     let specs_h = specs.len();
     let h_rest = h - specs_h;
+    // Limites do plano do Claude logo abaixo dos TOP, com uma linha de respiro; somem
+    // antes dos processos quando falta altura.
+    let limits = limit_lines(s, t, w);
+    let limits_h = if !limits.is_empty() && h_rest >= limits.len() + 1 + 10 { limits.len() } else { 0 };
+    let h_rest = h_rest - if limits_h > 0 { limits_h + 1 } else { 0 };
     let top_rows = if has_procs && h_rest >= 10 { (n + 1).min(h_rest - 8) } else { 0 };
     if specs_h > 0 {
         let y = inner.y + (h - specs_h) as u16;
@@ -77,12 +86,78 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let metrics_h = lines.len() as u16;
     f.render_widget(Paragraph::new(lines), Rect { height: metrics_h, ..inner });
 
+    let mut bottom = inner.y + metrics_h;
     if top_rows > 0 {
         // Logo abaixo das métricas (com uma linha de respiro, se couber).
         let gap = u16::from(metrics_h + (top_rows as u16) < inner.height);
         let y = inner.y + metrics_h + gap;
         let r = Rect { y, height: top_rows as u16, ..inner };
         f.render_widget(Paragraph::new(top_lines(s, d, w, top_rows - 1)), r);
+        bottom = y + top_rows as u16;
+    }
+    if limits_h > 0 {
+        let r = Rect { y: bottom + 1, height: limits_h as u16, ..inner };
+        f.render_widget(Paragraph::new(limits), r);
+    }
+}
+
+/// Bloco "LIMITES DO CLAUDE": "Sessão 5h ━━━━━━━━  45%  reinicia 19:50 (em 2h 03m)", um por limite.
+fn limit_lines(s: &AppState, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    if !s.config.claude.usage_limits {
+        return Vec::new();
+    }
+    let muted = Style::new().fg(t.muted);
+    let head = "LIMITES DO CLAUDE ";
+    let mut out = vec![Line::from(vec![
+        Span::styled(head, muted),
+        Span::styled("─".repeat(w.saturating_sub(head.chars().count())), Style::new().fg(t.border)),
+    ])];
+    let Some(d) = &s.usage.data else {
+        let msg = match &s.usage.error {
+            Some(e) => e.clone(),
+            None => "consultando…".into(),
+        };
+        out.push(Line::styled(truncate(&msg, w), muted));
+        return out;
+    };
+    let local_now = s.local_now();
+    let resets: Vec<String> = d
+        .limits
+        .iter()
+        .map(|l| l.resets_at.map(|r| format!("reinicia {}", locale::reset_when(&local_now, &r.with_timezone(&s.tz), s.config.locale))).unwrap_or_default())
+        .collect();
+    let label_w = d.limits.iter().map(|l| l.label.chars().count()).max().unwrap_or(6) + 2;
+    let reset_w = resets.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    let bar_w = w.saturating_sub(label_w + 7 + reset_w).clamp(6, 24);
+    for (l, reset) in d.limits.iter().zip(resets) {
+        let color = limit_color(t, l);
+        let (filled, empty) = bar(l.percent, bar_w);
+        let mut line = Line::from(vec![
+            Span::styled(format!("{:<label_w$}", l.label), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(filled, Style::new().fg(color)),
+            Span::styled(empty, Style::new().fg(t.border)),
+            Span::styled(format!(" {:>3.0}%  ", l.percent), Style::new().fg(if l.severity == Severity::Normal { t.fg } else { color }).add_modifier(Modifier::BOLD)),
+            Span::styled(reset, muted),
+        ]);
+        // sem espaço, some o "reinicia" antes da barra
+        if line.width() > w {
+            line.spans.pop();
+        }
+        out.push(line);
+    }
+    if let Some(e) = &s.usage.error {
+        out.push(Line::styled(truncate(&format!("desatualizado: {e}"), w), Style::new().fg(t.warn)));
+    }
+    out
+}
+
+fn limit_color(t: &Theme, l: &Limit) -> Color {
+    match l.severity {
+        Severity::Critical => t.alert,
+        Severity::Warning => t.warn,
+        Severity::Normal if l.percent < 60.0 => t.gauge_low,
+        Severity::Normal if l.percent < 85.0 => t.gauge_mid,
+        Severity::Normal => t.gauge_high,
     }
 }
 

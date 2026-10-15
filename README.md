@@ -32,8 +32,8 @@ O repositório é privado. A variável `CARGO_NET_GIT_FETCH_WITH_CLI` faz o carg
 | **Relógio** | cidade (pelo IP ou fixa no config) e relógios extras; próxima reunião; clima e próximas horas (Open-Meteo); mapa-múndi com a cidade |
 | **Agenda** | reuniões das próximas 48 h, com link da chamada |
 | **Docker** | containers rodando (o `docker ps`, sem `-a`): saúde, portas, projeto compose |
-| **Worktrees · Claude** | três abas: worktrees dos repositórios (branch, status da melhoria, alterações, ↑↓, idade, tamanho); **Claude Code**, com as conversas abertas e encerradas há pouco, tokens da rodada e os limites de 5 h e da semana; **Claude Desktop** (no WSL), com as sessões de Code e Cowork do app do Windows |
-| **Sistema** | caixas de CPU, Memória, Disco e Rede com detalhe por tipo de uso; Wi-Fi e tráfego do Windows no WSL; maiores ofensores de CPU e memória; especificações da máquina |
+| **Worktrees · Claude** | três abas: worktrees dos repositórios (branch, status da melhoria, alterações, ↑↓, idade, tamanho); **Claude Code**, com as conversas abertas e encerradas há pouco, tokens da rodada; **Claude Desktop** (no WSL), com as sessões de Code e Cowork do app do Windows |
+| **Sistema** | caixas de CPU, Memória, Disco e Rede com detalhe por tipo de uso; Wi-Fi e tráfego do Windows no WSL; maiores ofensores de CPU e memória e, logo abaixo, os limites de 5 h e da semana do Claude; especificações da máquina |
 
 Alertas:
 - **Reunião:** a borda fica amarela a 15 min. De 5 min antes a 5 min depois do início, o relógio inteiro fica vermelho e piscando.

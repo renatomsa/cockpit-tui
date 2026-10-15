@@ -8,14 +8,12 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::{ago, system::bar, truncate, worktrees::status_icon};
+use super::{ago, truncate, worktrees::status_icon};
 use crate::{
     app::state::{AppState, Panel},
-    locale,
     providers::{
         claude::{Session, Status},
         transcript::TurnStats,
-        usage::{Limit, Severity},
     },
     theme::Theme,
 };
@@ -33,15 +31,6 @@ pub fn body(f: &mut Frame, inner: Rect, s: &AppState) {
         f.render_widget(Paragraph::new(Line::styled(msg, Style::new().fg(t.muted))), inner);
         return;
     };
-
-    // Limites do plano ficam fixos no topo; a lista de conversas rola embaixo.
-    let head = limit_lines(s, t, w);
-    let head_h = (head.len() as u16).min(inner.height);
-    f.render_widget(Paragraph::new(head), Rect { height: head_h, ..inner });
-    let inner = Rect { y: inner.y + head_h, height: inner.height - head_h, ..inner };
-    if inner.height == 0 {
-        return;
-    }
 
     let focused = s.active_panel() == Panel::Sessions;
     let mut lines: Vec<Line> = Vec::new();
@@ -75,58 +64,6 @@ pub fn body(f: &mut Frame, inner: Rect, s: &AppState) {
     let h = inner.height as usize;
     let offset = (sel_line + 2).saturating_sub(h);
     f.render_widget(Paragraph::new(lines).scroll((offset as u16, 0)), inner);
-}
-
-/// "Sessão 5h ━━━━━━━━━━━━━━━  45%  reinicia 19:50 (em 2h 03m)", uma por limite.
-fn limit_lines(s: &AppState, t: &Theme, w: usize) -> Vec<Line<'static>> {
-    if !s.config.claude.usage_limits {
-        return Vec::new();
-    }
-    let muted = Style::new().fg(t.muted);
-    let Some(d) = &s.usage.data else {
-        let msg = match &s.usage.error {
-            Some(e) => format!("limites: {e}"),
-            None => "limites: consultando…".into(),
-        };
-        return vec![Line::styled(truncate(&msg, w), muted), Line::raw("")];
-    };
-    let label_w = d.limits.iter().map(|l| l.label.chars().count()).max().unwrap_or(6) + 2;
-    let bar_w = w.saturating_sub(label_w + 6 + 28).clamp(6, 24);
-    let local_now = s.local_now();
-    let mut out: Vec<Line> = d
-        .limits
-        .iter()
-        .map(|l| {
-            let color = limit_color(t, l);
-            let (filled, empty) = bar(l.percent, bar_w);
-            let reset = l
-                .resets_at
-                .map(|r| format!("reinicia {}", locale::reset_when(&local_now, &r.with_timezone(&s.tz), s.config.locale)))
-                .unwrap_or_default();
-            Line::from(vec![
-                Span::styled(format!("{:<label_w$}", l.label), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-                Span::styled(filled, Style::new().fg(color)),
-                Span::styled(empty, Style::new().fg(t.border)),
-                Span::styled(format!(" {:>3.0}%  ", l.percent), Style::new().fg(if l.severity == Severity::Normal { t.fg } else { color }).add_modifier(Modifier::BOLD)),
-                Span::styled(reset, muted),
-            ])
-        })
-        .collect();
-    if let Some(e) = &s.usage.error {
-        out.push(Line::styled(truncate(&format!("desatualizado: {e}"), w), Style::new().fg(t.warn)));
-    }
-    out.push(Line::raw(""));
-    out
-}
-
-fn limit_color(t: &Theme, l: &Limit) -> ratatui::style::Color {
-    match l.severity {
-        Severity::Critical => t.alert,
-        Severity::Warning => t.warn,
-        Severity::Normal if l.percent < 60.0 => t.gauge_low,
-        Severity::Normal if l.percent < 85.0 => t.gauge_mid,
-        Severity::Normal => t.gauge_high,
-    }
 }
 
 /// 950 → "950", 12_300 → "12.3k", 666_500 → "667k", 1_400_000 → "1.4M".

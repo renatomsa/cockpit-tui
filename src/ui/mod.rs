@@ -468,6 +468,26 @@ mod tests {
     }
 
     #[test]
+    fn claude_limits_sit_below_the_top_processes() {
+        use crate::providers::{
+            system::{ProcGroup, SystemSnapshot},
+            usage::{Limit, Severity, UsageSnapshot},
+        };
+        let mut s = state();
+        let g = |name: &str| ProcGroup { name: name.into(), count: 1, cpu: 10.0, mem: 1 << 30, top_pid: 1 };
+        s.system = Snapshot::ok(SystemSnapshot { top_cpu: vec![g("claude")], top_mem: vec![g("dockerd")], mem_total: 16 << 30, ..Default::default() });
+        let lim = |kind: &str, label: &str, pct| Limit { kind: kind.into(), label: label.into(), percent: pct, severity: Severity::Normal, resets_at: None };
+        s.usage = Snapshot::ok(UsageSnapshot { limits: vec![lim("session", "Sessão 5h", 22.0), lim("week", "Semana", 54.0)], plan: None });
+        let out = render(200, 50, &s);
+        let row = |needle: &str| out.lines().position(|l| l.contains(needle)).unwrap_or_else(|| panic!("sem {needle}:\n{out}"));
+        assert!(row("TOP CPU") < row("LIMITES DO CLAUDE"), "{out}");
+        assert!(row("LIMITES DO CLAUDE") < row("Sessão 5h") && row("Sessão 5h") < row("Semana"));
+        // a aba Claude Code não repete o bloco
+        s.wt_tab = crate::app::state::WtTab::Claude;
+        assert_eq!(render(200, 50, &s).matches("Sessão 5h").count(), 1);
+    }
+
+    #[test]
     fn compact_mode_shows_only_hero() {
         let out = render(120, 24, &state());
         assert!(!out.contains("Worktrees"));
