@@ -97,6 +97,26 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
         }
     }
 
+    // Status das worktrees: o `cockpit status` grava de outro terminal e a coluna acompanha.
+    let (st_tx, mut st_rx) = mpsc::channel::<()>(1);
+    let st_file = state.paths.wt_status_file();
+    let st_name = st_file.file_name().map(|n| n.to_os_string());
+    let mut st_watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res
+            && providers::is_change(&ev)
+            && ev.paths.iter().any(|p| p.file_name().map(|n| n.to_os_string()) == st_name)
+        {
+            let _ = st_tx.try_send(());
+        }
+    })
+    .map_err(|e| tracing::warn!("sem acompanhar o status das worktrees: {e}"))
+    .ok();
+    if let Some(w) = st_watcher.as_mut() {
+        use notify::Watcher;
+        let _ = std::fs::create_dir_all(&state.paths.state_dir);
+        let _ = w.watch(&state.paths.state_dir, notify::RecursiveMode::NonRecursive);
+    }
+
     let mut terminal = ratatui::init();
     let mut events = EventStream::new();
     let mut redraw = true;
@@ -179,6 +199,14 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 while cfg_rx.try_recv().is_ok() {}
                 continue;
             }
+            Some(()) = st_rx.recv() => {
+                let (file, tx) = (st_file.clone(), act_tx.clone());
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(Action::WtStatuses(crate::wt_status::load(&file)));
+                });
+                while st_rx.try_recv().is_ok() {}
+                continue;
+            }
             changed = desk_rx.changed(), if desk_alive => match changed {
                 Ok(()) => Action::Desktop(desk_rx.borrow_and_update().clone()),
                 Err(_) => { desk_alive = false; continue }
@@ -221,6 +249,16 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
             });
         }
         Effect::Copy(text) => crate::shell::osc52_copy(&text),
+        Effect::SetWtStatus { path, status } => {
+            let file = state.paths.wt_status_file();
+            tokio::task::spawn_blocking(move || {
+                let action = match crate::wt_status::set(&file, &path, status) {
+                    Ok(all) => Action::WtStatuses(all),
+                    Err(e) => Action::Notice(format!("não gravei o status: {e:#}")),
+                };
+                let _ = results.send(action);
+            });
+        }
         Effect::Permission(p, allow) => {
             let state_dir = state.paths.state_dir.clone();
             tokio::task::spawn_blocking(move || {

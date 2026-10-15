@@ -12,6 +12,7 @@ mod solar;
 mod terminal;
 mod theme;
 mod ui;
+mod wt_status;
 
 use std::{fs, path::PathBuf};
 
@@ -75,6 +76,18 @@ enum Cmd {
     ShellInit {
         /// zsh, bash ou fish
         shell: String,
+    },
+    /// Status da worktree em que você está (shape, wip, revisão manual, deploy, finalizado).
+    /// Sem status, abre um seletor; o cockpit aberto mostra na coluna de status.
+    Status {
+        /// shape, wip, revisao, deploy, finalizado (ou 1 a 5); nenhum limpa.
+        estado: Option<String>,
+        /// Pasta da worktree (padrão: a atual).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Lista as worktrees com status.
+        #[arg(long, short)]
+        list: bool,
     },
     /// Arquivo de configuração.
     Config {
@@ -154,6 +167,7 @@ fn main() -> Result<()> {
             println!("config  {}", cli.config.unwrap_or_else(|| paths.config_file()).display());
             println!("temas   {}", paths.themes_dir().display());
             println!("estado  {}", paths.state_file().display());
+            println!("status  {}", paths.wt_status_file().display());
             println!("log     {}", paths.state_dir.join("cockpit.log").display());
             Ok(())
         }
@@ -194,6 +208,7 @@ fn main() -> Result<()> {
             }
         }
         Some(Cmd::Calendar { cmd }) => calendar_cmd(cmd, cli.config, &paths),
+        Some(Cmd::Status { estado, dir, list }) => wt_status::cli(estado, dir, list, &paths),
         Some(Cmd::ShellInit { shell }) => {
             print!("{}", shell::init_script(&shell)?);
             Ok(())
@@ -242,6 +257,7 @@ fn run(
     state.has_cd_file = cd_file.is_some();
     state.demo_agenda = demo_agenda;
     state.launcher = terminal::detect(&state.config.terminal.new_tab);
+    state.wt_status = wt_status::load(&state.paths.wt_status_file());
     tracing::info!(launcher = ?state.launcher, "aba nova");
 
     let rt = tokio::runtime::Builder::new_multi_thread()

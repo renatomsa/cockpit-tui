@@ -50,9 +50,68 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if s.show_legend {
         legend::draw(f, area, s);
     }
+    if let Some(p) = &s.status_pick {
+        status_dialog(f, area, s, p);
+    }
     if let Some(c) = &s.confirm {
         confirm_dialog(f, area, s, c);
     }
+}
+
+/// Seletor de status da worktree (tecla `s`).
+fn status_dialog(f: &mut Frame, area: Rect, s: &AppState, p: &crate::app::state::StatusPick) {
+    use crate::wt_status::CHOICES;
+    let t = s.theme();
+    let current = s.wt_status.get(&p.path).copied();
+    let mut lines: Vec<Line> = CHOICES
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let selected = i == p.sel;
+            let (num, label, style) = match c {
+                Some(st) => (format!("{}", i + 1), st.label(), worktrees::status_style(t, *st)),
+                None => ("0".into(), "sem status", Style::new().fg(t.muted)),
+            };
+            let mut spans = vec![
+                Span::styled(if selected { "▸ " } else { "  " }, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{num}  "), Style::new().fg(t.muted)),
+                Span::styled(label, style),
+            ];
+            if *c == current {
+                spans.push(Span::styled("  (atual)", Style::new().fg(t.muted)));
+            }
+            let line = Line::from(spans);
+            if selected { line.style(Style::new().bg(t.border)) } else { line }
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("Enter", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(" grava · ", Style::new().fg(t.muted)),
+        Span::styled("1-5", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(" direto · ", Style::new().fg(t.muted)),
+        Span::styled("0", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(" limpa · ", Style::new().fg(t.muted)),
+        Span::styled("Esc", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(" cancela", Style::new().fg(t.muted)),
+    ]));
+    let title = format!(" status · {} ", truncate(&p.name, 40));
+    let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(20).max(title.chars().count());
+    let w = (content_w as u16 + 4).min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(t.accent))
+                .title(Span::styled(title, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))
+                .padding(Padding::horizontal(1))
+                .style(Style::new().bg(t.bg)),
+        ),
+        r,
+    );
 }
 
 /// Textos dos dois avisos de exclusão de worktree.
@@ -208,6 +267,7 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
         ]),
         None => {
             let hints: &[(&'static str, &'static str)] = match s.active_panel() {
+                _ if s.status_pick.is_some() => &[("↑↓", " escolher  "), ("Enter", " gravar  "), ("1-5", " direto  "), ("0", " limpar  "), ("Esc", " cancelar")],
                 _ if s.filter_editing => &[("digite", " para filtrar  "), ("↑↓", " escolher  "), ("Enter", " aplicar  "), ("Esc", " limpar")],
                 Panel::System => &[("s", " velocidade  "), ("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Worktrees => &[
@@ -215,6 +275,7 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
                     ("↑↓", " escolher  "),
                     ("Enter", " ir para a pasta  "),
                     ("C", " claude numa aba nova  "),
+                    ("s", " status  "),
                     ("D", " excluir  "),
                     ("/", " filtrar  "),
                     ("i", " legenda  "),
@@ -252,7 +313,8 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ("t / T", "próximo / anterior tema (fica lembrado)"),
         ("Enter (Worktrees)", "sai e vai para a worktree (com o shell-init)"),
         ("C (Worktrees)", "abre `claude --continue` numa aba nova, na worktree"),
-        ("/ (Worktrees)", "filtra por nome ou branch; Esc limpa"),
+        ("s (Worktrees)", "status: shape, wip, revisão manual, deploy, finalizado"),
+        ("/ (Worktrees)", "filtra por nome, branch ou status; Esc limpa"),
         ("D (Worktrees)", "exclui a worktree selecionada (dois avisos antes)"),
         ("← → (Worktrees)", "troca entre as abas Worktrees e Claude"),
         ("Enter (Claude)", "sai e vai para a pasta da conversa"),
@@ -382,6 +444,27 @@ mod tests {
         assert!(out.contains('█'));
         assert!(out.contains("UTC-03:00"));
         assert!(out.contains("Sistema") && out.contains("Worktrees") && out.contains("Claude"));
+    }
+
+    #[test]
+    fn status_column_and_picker() {
+        use crate::{
+            app::state::StatusPick,
+            providers::git::{Repo, Worktree, WorktreesSnapshot},
+            wt_status::WtStatus,
+        };
+        let mut s = state();
+        let wt = |name: &str, path: &str| Worktree { name: name.into(), path: path.into(), branch: Some("main".into()), ..Default::default() };
+        s.worktrees = Snapshot::ok(WorktreesSnapshot {
+            repos: vec![Repo { name: "v360".into(), path: "/h/v360".into(), worktrees: vec![wt("build-s4", "/h/a"), wt("cfs", "/h/b")] }],
+        });
+        assert!(!render(200, 50, &s).contains("revisão"), "sem status, sem coluna");
+        s.wt_status.insert("/h/a".into(), WtStatus::RevisaoManual);
+        let out = render(200, 50, &s);
+        assert!(out.lines().any(|l| l.contains("build-s4") && l.contains("revisão")), "{out}");
+        s.status_pick = Some(StatusPick { path: "/h/a".into(), name: "build-s4".into(), sel: 2 });
+        let out = render(200, 50, &s);
+        assert!(out.contains("status · build-s4") && out.contains("revisão manual  (atual)"), "{out}");
     }
 
     #[test]

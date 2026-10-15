@@ -1,5 +1,6 @@
 //! Painel de worktrees: repositórios como cabeçalho e, embaixo, cada worktree com branch,
-//! alterações, ↑↓ do upstream, idade do último commit, tamanho e as sessões do Claude nela.
+//! status da melhoria, alterações, ↑↓ do upstream, idade do último commit, tamanho e as
+//! sessões do Claude nela.
 
 use ratatui::{
     Frame,
@@ -18,6 +19,7 @@ use crate::{
         git::{Repo, Worktree},
     },
     theme::Theme,
+    wt_status::WtStatus,
 };
 
 /// Conteúdo da aba Worktrees (a moldura com as abas é do `workspace`).
@@ -139,6 +141,8 @@ fn repo_line(t: &Theme, r: &Repo, w: usize) -> Line<'static> {
 struct Columns {
     name: usize,
     branch: usize,
+    /// 0 quando nenhuma worktree visível tem status: a coluna nem aparece.
+    status: usize,
 }
 
 const FIXED: usize = 4 + 2 + 6 + 10 + 5 + 7 + 6; // árvore, gaps, ✎, ↑↓, idade, tamanho, sessões
@@ -150,14 +154,21 @@ impl Columns {
         let mut name = visible.iter().filter_map(wt).map(|w| label(w).chars().count()).max().unwrap_or(8).clamp(8, 36);
         let mut branch =
             visible.iter().filter_map(wt).map(|w| branch_text(w).chars().count()).max().unwrap_or(6).clamp(6, 48);
-        let room = w.saturating_sub(FIXED);
+        let status = visible
+            .iter()
+            .filter_map(wt)
+            .filter_map(|w| s.wt_status.get(&w.path))
+            .map(|st| st.short().chars().count() + 2)
+            .max()
+            .unwrap_or(0);
+        let room = w.saturating_sub(FIXED + status);
         while name + branch + 2 > room && branch > 12 {
             branch -= 1;
         }
         while name + branch + 2 > room && name > 10 {
             name -= 1;
         }
-        Self { name, branch }
+        Self { name, branch, status }
     }
 }
 
@@ -210,6 +221,10 @@ fn worktree_line(s: &AppState, t: &Theme, w: &Worktree, c: &Columns, is_last: bo
         Span::styled(tree, Style::new().fg(t.border)),
         Span::styled(pad(&truncate(&label(w), c.name), c.name + 2), name_style),
         Span::styled(pad(&truncate(&branch_text(w), c.branch), c.branch + 2), Style::new().fg(t.highlight)),
+        match s.wt_status.get(&w.path) {
+            Some(st) => Span::styled(pad(st.short(), c.status), status_style(t, *st)),
+            None => Span::raw(" ".repeat(c.status)),
+        },
         dirty,
         Span::styled(pad(&ab, 10), Style::new().fg(t.accent)),
         Span::styled(format!("{age:>4} "), Style::new().fg(t.muted)),
@@ -227,6 +242,17 @@ fn worktree_line(s: &AppState, t: &Theme, w: &Worktree, c: &Columns, is_last: bo
         line = line.style(Style::new().bg(t.border));
     }
     line
+}
+
+/// Uma cor por etapa, do planejamento (shape) ao fim (finalizado).
+pub(crate) fn status_style(t: &Theme, st: WtStatus) -> Style {
+    match st {
+        WtStatus::Shape => Style::new().fg(t.spark),
+        WtStatus::Wip => Style::new().fg(t.warn),
+        WtStatus::RevisaoManual => Style::new().fg(t.gauge_mid).add_modifier(Modifier::BOLD),
+        WtStatus::Deploy => Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+        WtStatus::Finalizado => Style::new().fg(t.ok),
+    }
 }
 
 /// ◆ esperando você · ⠿ trabalhando · $ rodando shell · ● parada · ○ encerrada

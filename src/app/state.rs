@@ -27,6 +27,7 @@ use crate::{
     shell::ExitTarget,
     terminal::Launcher,
     theme::{Theme, ThemeRegistry},
+    wt_status::Statuses,
 };
 
 /// Painéis que recebem foco com Tab, na ordem de navegação.
@@ -122,6 +123,15 @@ pub struct RemoveWt {
     pub prunable: bool,
 }
 
+/// Seletor de status aberto com `s` numa worktree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatusPick {
+    pub path: PathBuf,
+    pub name: String,
+    /// Posição em `wt_status::CHOICES`.
+    pub sel: usize,
+}
+
 /// Todo o estado da tela. Só `update` escreve aqui; só `ui::draw` lê.
 pub struct AppState {
     pub now: DateTime<Utc>,
@@ -163,6 +173,9 @@ pub struct AppState {
     pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
     /// Índice na lista filtrada de worktrees.
     pub wt_sel: usize,
+    /// Status de cada worktree (shape, wip…), espelho de `worktree-status.toml`.
+    pub wt_status: Statuses,
+    pub status_pick: Option<StatusPick>,
     pub filter: String,
     pub filter_editing: bool,
     /// Índice em `live` seguido de `recent`.
@@ -224,6 +237,8 @@ impl AppState {
             docker_sel: 0,
             wt_sessions: HashMap::new(),
             wt_sel: 0,
+            wt_status: Statuses::new(),
+            status_pick: None,
             filter: String::new(),
             filter_editing: false,
             sess_sel: 0,
@@ -352,7 +367,8 @@ impl AppState {
         let mut out = Vec::new();
         for (ri, r) in d.repos.iter().enumerate() {
             for (wi, w) in r.worktrees.iter().enumerate() {
-                let hay = format!("{}/{} {}", r.name, w.name, w.branch.as_deref().unwrap_or("")).to_lowercase();
+                let status = self.wt_status.get(&w.path).map_or("", |s| s.label());
+                let hay = format!("{}/{} {} {status}", r.name, w.name, w.branch.as_deref().unwrap_or("")).to_lowercase();
                 if fuzzy_match(&needle, &hay) {
                     out.push((ri, wi));
                 }

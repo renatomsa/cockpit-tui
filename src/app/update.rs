@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::state::{AppState, Confirm, KillTarget, Panel, ProcCol, RemoveWt, WtTab};
+use super::state::{AppState, Confirm, KillTarget, Panel, ProcCol, RemoveWt, StatusPick, WtTab};
 use crate::{
     providers::{
         Snapshot,
@@ -22,6 +22,7 @@ use crate::{
         usage::UsageSnapshot,
     },
     shell::{ExitTarget, Then},
+    wt_status::{CHOICES, Statuses, WtStatus},
 };
 
 #[derive(Debug)]
@@ -47,6 +48,8 @@ pub enum Action {
     Reloaded(Box<Reloaded>),
     /// Mensagem para a barra de status (ex.: resultado de um efeito).
     Notice(String),
+    /// `worktree-status.toml` relido (mudou pelo `cockpit status` ou pela tecla `s`).
+    WtStatuses(Statuses),
 }
 
 #[derive(Debug)]
@@ -73,6 +76,8 @@ pub enum Effect {
     Docker { cmds: Vec<DockerCmd>, label: String },
     /// Copia para a área de transferência pelo terminal (OSC 52).
     Copy(String),
+    /// Grava o status da worktree (`None` limpa).
+    SetWtStatus { path: std::path::PathBuf, status: Option<WtStatus> },
     /// Abre uma aba nova de terminal rodando `cmd` em `dir`; o cockpit continua aberto.
     OpenTab { launcher: crate::terminal::Launcher, dir: std::path::PathBuf, cmd: String, title: String },
 }
@@ -203,6 +208,10 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
             s.notices.truncate(5);
             Outcome::redraw()
         }
+        Action::WtStatuses(map) => {
+            s.wt_status = map;
+            Outcome::redraw()
+        }
         Action::Key(k) => on_key(s, k),
     }
 }
@@ -262,6 +271,9 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
                 Outcome::redraw()
             }
         };
+    }
+    if let Some(p) = s.status_pick.take() {
+        return on_status_pick(s, p, k.code);
     }
     if s.show_help || s.show_legend {
         s.show_help = false;
@@ -366,6 +378,37 @@ fn on_filter_key(s: &mut AppState, code: KeyCode) -> Outcome {
     Outcome::redraw()
 }
 
+/// Seletor de status aberto: ↑↓ e Enter, ou o número direto; Esc cancela.
+fn on_status_pick(s: &mut AppState, mut p: StatusPick, code: KeyCode) -> Outcome {
+    let choice = match code {
+        KeyCode::Esc | KeyCode::Char('q') => return Outcome::redraw(),
+        KeyCode::Enter => CHOICES[p.sel],
+        KeyCode::Char('0') | KeyCode::Backspace | KeyCode::Delete => None,
+        KeyCode::Char(c) if c.is_ascii_digit() => match WtStatus::parse(&c.to_string()) {
+            Some(st) => Some(st),
+            None => {
+                s.status_pick = Some(p);
+                return Outcome::default();
+            }
+        },
+        _ => {
+            step(&mut p.sel, CHOICES.len(), code);
+            s.status_pick = Some(p);
+            return Outcome::redraw();
+        }
+    };
+    if s.wt_status.get(&p.path).copied() == choice {
+        return Outcome::redraw();
+    }
+    match choice {
+        Some(st) => s.wt_status.insert(p.path.clone(), st),
+        None => s.wt_status.remove(&p.path),
+    };
+    s.notices.insert(0, format!("{}: {}", p.name, choice.map_or("sem status", WtStatus::label)));
+    s.notices.truncate(5);
+    Outcome { redraw: true, effect: Some(Effect::SetWtStatus { path: p.path, status: choice }) }
+}
+
 /// Move a seleção numa lista de `n` itens.
 fn step(sel: &mut usize, n: usize, code: KeyCode) -> bool {
     let last = n.saturating_sub(1);
@@ -454,6 +497,13 @@ fn on_worktrees_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
         KeyCode::Esc if !s.filter.is_empty() => {
             s.filter.clear();
             s.wt_sel = 0;
+            Some(Outcome::redraw())
+        }
+        KeyCode::Char('s') => {
+            let w = s.selected_worktree()?;
+            let current = s.wt_status.get(&w.path).copied();
+            let sel = current.and_then(|c| CHOICES.iter().position(|x| *x == Some(c))).unwrap_or(0);
+            s.status_pick = Some(StatusPick { path: w.path.clone(), name: w.name.clone(), sel });
             Some(Outcome::redraw())
         }
         KeyCode::Char('D') => {
@@ -759,6 +809,39 @@ mod tests {
         update(&mut s, key(KeyCode::Char('y')));
         let out = update(&mut s, key(KeyCode::Enter));
         assert!(matches!(out.effect, Some(Effect::RemoveWorktree(ref r)) if r.name == "processable-file-cfs"));
+    }
+
+    #[test]
+    fn s_picks_a_status_for_the_selected_worktree() {
+        let mut s = state();
+        with_worktrees(&mut s);
+        update(&mut s, key(KeyCode::Down));
+        update(&mut s, key(KeyCode::Char('s')));
+        let wt: std::path::PathBuf = "/h/v360/.claude/worktrees/processable-file-cfs".into();
+        assert_eq!(s.status_pick, Some(StatusPick { path: wt.clone(), name: "processable-file-cfs".into(), sel: 0 }));
+        // com o seletor aberto, q não sai e j só move
+        update(&mut s, key(KeyCode::Char('j')));
+        update(&mut s, key(KeyCode::Char('j')));
+        let out = update(&mut s, key(KeyCode::Enter));
+        assert!(!s.quit && s.status_pick.is_none());
+        assert_eq!(out.effect, Some(Effect::SetWtStatus { path: wt.clone(), status: Some(WtStatus::RevisaoManual) }));
+        assert_eq!(s.wt_status.get(&wt), Some(&WtStatus::RevisaoManual));
+        // reabre já no atual; número escolhe direto; 0 limpa; Esc não muda nada
+        update(&mut s, key(KeyCode::Char('s')));
+        assert_eq!(s.status_pick.as_ref().map(|p| p.sel), Some(2));
+        let out = update(&mut s, key(KeyCode::Char('2')));
+        assert_eq!(out.effect, Some(Effect::SetWtStatus { path: wt.clone(), status: Some(WtStatus::Wip) }));
+        update(&mut s, key(KeyCode::Char('s')));
+        assert!(update(&mut s, key(KeyCode::Esc)).effect.is_none());
+        assert_eq!(s.wt_status.get(&wt), Some(&WtStatus::Wip));
+        update(&mut s, key(KeyCode::Char('s')));
+        let out = update(&mut s, key(KeyCode::Char('0')));
+        assert_eq!(out.effect, Some(Effect::SetWtStatus { path: wt.clone(), status: None }));
+        assert!(s.wt_status.is_empty());
+        // o filtro casa pelo status
+        update(&mut s, Action::WtStatuses([(wt, WtStatus::Deploy)].into()));
+        s.filter = "deploy".into();
+        assert_eq!(s.visible_worktrees().len(), 1);
     }
 
     #[test]

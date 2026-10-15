@@ -9,12 +9,16 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, Paragraph},
 };
 
-use super::{system::level_style, worktrees::status_icon};
+use super::{
+    system::level_style,
+    worktrees::{status_icon, status_style},
+};
 use crate::{
     app::state::{AppState, Panel},
     danger::Level,
     providers::claude::Status,
     theme::Theme,
+    wt_status::WtStatus,
 };
 
 /// (símbolo como aparece no painel, explicação)
@@ -84,6 +88,11 @@ fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
                 (st("├ └", Style::new().fg(t.border)), "worktrees do repositório acima"),
                 (st("(principal)", fg), "a pasta principal do repositório"),
                 (st("feat/x", Style::new().fg(t.highlight)), "branch em que a worktree está"),
+                (st("wip", status_style(t, WtStatus::Wip)), "status da melhoria (`s` escolhe; `cockpit status` no terminal)"),
+                (st("shape", status_style(t, WtStatus::Shape)), "desenhando a solução, antes do código"),
+                (st("revisão", status_style(t, WtStatus::RevisaoManual)), "revisão manual: esperando alguém testar ou revisar"),
+                (st("deploy", status_style(t, WtStatus::Deploy)), "indo para produção"),
+                (st("finalizado", status_style(t, WtStatus::Finalizado)), "entregue"),
                 (st("✎ 4", Style::new().fg(t.warn)), "arquivos alterados ou novos, ainda sem commit"),
                 (st("✓", Style::new().fg(t.ok)), "nada pendente"),
                 (st("↑2", Style::new().fg(t.accent)), "commits seus que ainda não subiram"),

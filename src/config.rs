@@ -431,6 +431,11 @@ impl Paths {
     pub fn state_file(&self) -> PathBuf {
         self.state_dir.join("state.toml")
     }
+
+    /// Status de cada worktree (shape, wip…), escolhido com `s` ou `cockpit status`.
+    pub fn wt_status_file(&self) -> PathBuf {
+        self.state_dir.join("worktree-status.toml")
+    }
 }
 
 /// O que o app lembra entre execuções (hoje: o último tema escolhido com `t`).

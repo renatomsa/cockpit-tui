@@ -32,7 +32,7 @@ O repositório é privado. A variável `CARGO_NET_GIT_FETCH_WITH_CLI` faz o carg
 | **Relógio** | cidade (pelo IP ou fixa no config) e relógios extras; próxima reunião; clima e próximas horas (Open-Meteo); mapa-múndi com a cidade |
 | **Agenda** | reuniões das próximas 48 h, com link da chamada |
 | **Docker** | containers rodando (o `docker ps`, sem `-a`): saúde, portas, projeto compose |
-| **Worktrees · Claude** | três abas: worktrees dos repositórios (branch, alterações, ↑↓, idade, tamanho); **Claude Code**, com as conversas abertas e encerradas há pouco, tokens da rodada e os limites de 5 h e da semana; **Claude Desktop** (no WSL), com as sessões de Code e Cowork do app do Windows |
+| **Worktrees · Claude** | três abas: worktrees dos repositórios (branch, status da melhoria, alterações, ↑↓, idade, tamanho); **Claude Code**, com as conversas abertas e encerradas há pouco, tokens da rodada e os limites de 5 h e da semana; **Claude Desktop** (no WSL), com as sessões de Code e Cowork do app do Windows |
 | **Sistema** | caixas de CPU, Memória, Disco e Rede com detalhe por tipo de uso; Wi-Fi e tráfego do Windows no WSL; maiores ofensores de CPU e memória; especificações da máquina |
 
 Alertas:
@@ -54,7 +54,8 @@ A tecla `i` mostra a legenda dos símbolos do painel em foco.
 | Docker | `K` · `X` | para o container · derruba tudo (`compose down --remove-orphans` por projeto), com confirmação |
 | Worktrees | `← →` | troca entre as abas Worktrees, Claude Code e Claude Desktop |
 | | `Enter` · `C` | vai para a pasta · abre `claude --continue` numa aba nova |
-| | `/` · `D` | filtra · exclui a worktree (dois avisos: `y` e depois Enter) |
+| | `s` | status da melhoria: shape, wip, revisão manual, deploy, finalizado (↑↓ e Enter, `1`-`5` direto, `0` limpa) |
+| | `/` · `D` | filtra (por nome, branch ou status) · exclui a worktree (dois avisos: `y` e depois Enter) |
 | Claude Code | `Enter` · `r` | vai para a pasta · retoma uma conversa encerrada numa aba nova |
 | qualquer painel | `a` | permite desta vez o pedido de permissão (o da conversa selecionada, ou o único pendente) |
 | Sistema | `s` | teste de velocidade (download e upload) |
@@ -65,6 +66,7 @@ A tecla `i` mostra a legenda dos símbolos do painel em foco.
 | Comando | O que faz |
 |---|---|
 | `cockpit doctor` | confere cada peça e diz como resolver o que falta |
+| `cockpit status [estado]` / `status --list` | status da worktree em que você está; sem estado, abre o seletor. Aceita `shape`, `wip`, `revisao`, `deploy`, `finalizado` (ou `1`-`5`) e `nenhum`; `--dir` aponta outra worktree. O cockpit aberto atualiza a coluna na hora |
 | `cockpit theme list` / `install <arquivo ou URL>` / `remove <nome>` | gerencia temas |
 | `cockpit config init` / `config path` | cria o config / mostra onde ficam config, temas, estado e log |
 | `cockpit calendar add <endereço iCal>` / `list` / `remove <n>` | conecta a agenda pelo endereço iCal |
