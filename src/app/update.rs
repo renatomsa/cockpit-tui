@@ -1,28 +1,22 @@
 //! `update`: única função que muda o estado. Pura (sem I/O); efeitos voltam como `Effect`.
 
 use chrono::{DateTime, Utc};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use super::state::{AppState, Confirm, KillTarget, Panel, ProcCol, RemoveWt, StatusPick, WtTab};
+use super::state::{AppState, ChatPick, Confirm, KillTarget, Panel, ProcCol, VoiceState};
 use crate::{
+    chat::ChatCmd,
+    voice::VoiceCmd,
     providers::{
         Snapshot,
         calendar::CalendarSnapshot,
-        claude::{SessionsSnapshot, Status},
-        desktop::DesktopSnapshot,
-        docker::{self, DockerCmd, DockerSnapshot},
+        claude::SessionsSnapshot,
         geo::Geo,
         git::WorktreesSnapshot,
-        hostnet::HostNet,
-        speedtest::SpeedEvent,
         weather::Weather,
-        ping::PingSnapshot,
-        specs::Specs,
         system::SystemSnapshot,
         usage::UsageSnapshot,
     },
-    shell::{ExitTarget, Then},
-    wt_status::{CHOICES, Statuses, WtStatus},
 };
 
 #[derive(Debug)]
@@ -33,23 +27,25 @@ pub enum Action {
     Geo(Snapshot<Geo>),
     /// Em `Box`: o snapshot de sistema é bem maior que as outras ações.
     System(Box<Snapshot<SystemSnapshot>>),
-    Ping(Snapshot<PingSnapshot>),
     Worktrees(Snapshot<WorktreesSnapshot>),
     Sessions(Snapshot<SessionsSnapshot>),
     Usage(Snapshot<UsageSnapshot>),
-    Specs(Snapshot<Specs>),
-    Docker(Snapshot<DockerSnapshot>),
     Calendar(Snapshot<CalendarSnapshot>),
-    Desktop(Snapshot<DesktopSnapshot>),
-    HostNet(Snapshot<HostNet>),
     Weather(Snapshot<Weather>),
-    Speed(SpeedEvent),
+    /// Um chat embutido abriu (o `Hub` já criou o processo).
+    ChatOpened(crate::chat::ChatView),
+    /// O `claude` de um chat saiu.
+    ChatExited(u64),
+    /// Texto colado no terminal (bracketed paste).
+    Paste(String),
+    /// Mouse sobre a tela do chat, com coluna e linha relativas a ela.
+    ChatMouse(MouseEvent),
     /// Config e temas relidos do disco (o arquivo mudou).
     Reloaded(Box<Reloaded>),
     /// Mensagem para a barra de status (ex.: resultado de um efeito).
     Notice(String),
-    /// `worktree-status.toml` relido (mudou pelo `cockpit status` ou pela tecla `s`).
-    WtStatuses(Statuses),
+    /// Texto ditado (ou o erro) da gravação `take`.
+    VoiceText { take: u64, text: Result<String, String> },
 }
 
 #[derive(Debug)]
@@ -66,20 +62,14 @@ pub enum Effect {
     Kill(KillTarget),
     /// Responde um pedido de permissão do Claude Code (true = permitir desta vez).
     Permission(crate::claude_hook::Pending, bool),
-    /// Roda o teste de velocidade; o progresso volta como `Action::Speed`.
-    SpeedTest,
+    /// Pedido para os chats embutidos; o loop principal executa no `Hub`.
+    Chat(crate::chat::ChatCmd),
     /// Abre uma URL no navegador (link da reunião).
     OpenUrl(String),
-    /// `git worktree remove` (ou `prune`), já confirmado nos dois avisos.
-    RemoveWorktree(RemoveWt),
-    /// Comandos do Docker já confirmados; `label` resume a ação na barra de status.
-    Docker { cmds: Vec<DockerCmd>, label: String },
     /// Copia para a área de transferência pelo terminal (OSC 52).
     Copy(String),
-    /// Grava o status da worktree (`None` limpa).
-    SetWtStatus { path: std::path::PathBuf, status: Option<WtStatus> },
-    /// Abre uma aba nova de terminal rodando `cmd` em `dir`; o cockpit continua aberto.
-    OpenTab { launcher: crate::terminal::Launcher, dir: std::path::PathBuf, cmd: String, title: String },
+    /// Gravação do ditado; o loop principal executa no `Voice`.
+    Voice(VoiceCmd),
 }
 
 #[derive(Debug, Default)]
@@ -98,6 +88,14 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
     match action {
         Action::Tick(now) => {
             s.now = now;
+            // A gravação para sozinha no limite do config.
+            if let VoiceState::Recording { since } = s.voice
+                && (now - since).num_seconds() >= s.config.voice.max_seconds
+            {
+                s.voice = VoiceState::Transcribing;
+                s.notices.insert(0, format!("ditado: parei no limite de {} s", s.config.voice.max_seconds));
+                return Outcome { redraw: true, effect: Some(Effect::Voice(VoiceCmd::Stop)) };
+            }
             Outcome::redraw()
         }
         Action::Resize => Outcome::redraw(),
@@ -112,26 +110,18 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
             s.proc_sel.row = s.proc_sel.row.min(n.saturating_sub(1));
             Outcome::redraw()
         }
-        Action::Ping(snap) => {
-            s.ping = snap;
-            Outcome::redraw()
-        }
         Action::Worktrees(snap) => {
             s.worktrees = snap;
-            s.recompute_wt_sessions();
-            s.wt_sel = s.wt_sel.min(s.visible_worktrees().len().saturating_sub(1));
+            // o seletor de pasta aberto acompanha a lista nova
+            if let Some(p) = &s.chat_pick {
+                let n = s.chat_dirs(&p.query).len();
+                let sel = p.sel.min(n.saturating_sub(1));
+                s.chat_pick.as_mut().unwrap().sel = sel;
+            }
             Outcome::redraw()
         }
         Action::Sessions(snap) => {
-            // A ordem muda quando o status muda: a seleção segue a conversa, não a posição.
-            let selected = s.session_list().get(s.sess_sel).map(|x| x.id.clone());
             s.sessions = snap;
-            s.recompute_wt_sessions();
-            let list = s.session_list();
-            s.sess_sel = selected
-                .and_then(|id| list.iter().position(|x| x.id == id))
-                .unwrap_or(s.sess_sel)
-                .min(list.len().saturating_sub(1));
             Outcome::redraw()
         }
         Action::Reloaded(r) => {
@@ -153,32 +143,8 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
             s.notices.truncate(5);
             Outcome::redraw()
         }
-        Action::HostNet(snap) => {
-            s.host_net = snap;
-            Outcome::redraw()
-        }
         Action::Weather(snap) => {
             s.weather = snap;
-            Outcome::redraw()
-        }
-        Action::Speed(ev) => {
-            match ev {
-                SpeedEvent::Progress(phase, mbps) => s.speed.running = Some((phase, mbps)),
-                SpeedEvent::Done(r) => {
-                    s.speed = crate::app::state::SpeedState { running: None, last: Some(r), error: None };
-                }
-                SpeedEvent::Failed(e) => {
-                    s.speed.running = None;
-                    s.speed.error = Some(e.clone());
-                    s.notices.insert(0, format!("teste de velocidade falhou: {e}"));
-                }
-            }
-            Outcome::redraw()
-        }
-        Action::Desktop(snap) => {
-            s.desktop = snap;
-            let n = s.desktop.data.as_ref().map_or(0, |d| d.sessions.len());
-            s.desktop_sel = s.desktop_sel.min(n.saturating_sub(1));
             Outcome::redraw()
         }
         Action::Calendar(snap) => {
@@ -187,16 +153,6 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
             let keys: std::collections::HashSet<String> = s.events().iter().map(|e| e.key()).collect();
             s.dismissed.retain(|k| keys.contains(k));
             s.agenda_sel = s.agenda_sel.min(s.events().len().saturating_sub(1));
-            Outcome::redraw()
-        }
-        Action::Docker(snap) => {
-            s.docker = snap;
-            let n = s.docker.data.as_ref().map_or(0, |d| d.containers.len());
-            s.docker_sel = s.docker_sel.min(n.saturating_sub(1));
-            Outcome::redraw()
-        }
-        Action::Specs(snap) => {
-            s.specs = snap;
             Outcome::redraw()
         }
         Action::Usage(snap) => {
@@ -208,11 +164,34 @@ pub fn update(s: &mut AppState, action: Action) -> Outcome {
             s.notices.truncate(5);
             Outcome::redraw()
         }
-        Action::WtStatuses(map) => {
-            s.wt_status = map;
+        Action::Key(k) => on_key(s, k),
+        Action::ChatOpened(view) => {
+            s.chats.push(view);
+            s.chat_sel = s.chats.len() - 1;
+            s.focus = Panel::Chat;
+            s.chat_typing = true;
             Outcome::redraw()
         }
-        Action::Key(k) => on_key(s, k),
+        Action::ChatExited(id) => {
+            if let Some(c) = s.chats.iter_mut().find(|c| c.id == id) {
+                c.exited = true;
+                s.notices.insert(0, format!("o chat {} encerrou · x fecha a aba", c.title));
+            }
+            if s.selected_chat().is_some_and(|c| c.id == id) {
+                s.chat_typing = false;
+            }
+            Outcome::redraw()
+        }
+        Action::ChatMouse(ev) => on_chat_mouse(s, ev),
+        Action::VoiceText { take, text } => on_voice_text(s, take, text),
+        Action::Paste(text) => match s.selected_chat() {
+            Some(c) if s.focus == Panel::Chat && s.chat_typing && !c.exited => {
+                let bracketed = c.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
+                let bytes = crate::chat::encode_paste(&text, bracketed);
+                Outcome { redraw: false, effect: Some(Effect::Chat(ChatCmd::Input(c.id, bytes))) }
+            }
+            _ => Outcome::default(),
+        },
     }
 }
 
@@ -220,30 +199,29 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
     if k.kind != KeyEventKind::Press {
         return Outcome::default();
     }
-    if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
-        s.quit = true;
-        return Outcome::default();
+    if s.focus == Panel::Chat
+        && s.chat_typing
+        && s.confirm.is_none()
+        && s.alert().level != crate::alert::Level::Imminent
+    {
+        return on_chat_typing(s, k);
     }
-    if let Some(Confirm::RemoveWorktree(r)) = s.confirm.take_if(|c| matches!(c, Confirm::RemoveWorktree(_))) {
-        return match (r.step, k.code) {
-            (1, KeyCode::Char('y') | KeyCode::Char('Y')) => {
-                s.confirm = Some(Confirm::RemoveWorktree(RemoveWt { step: 2, ..r }));
-                Outcome::redraw()
-            }
-            (2, KeyCode::Enter) => Outcome { redraw: true, effect: Some(Effect::RemoveWorktree(r)) },
-            _ => {
-                s.notices.insert(0, format!("exclusão de {} cancelada", r.name));
-                Outcome::redraw()
-            }
-        };
+    if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+        return quit(s);
     }
     if let Some(c) = s.confirm.take() {
         let yes = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-        let effect = yes.then_some(match c {
-            Confirm::Kill(t) => Effect::Kill(t),
-            Confirm::Docker { title, cmds, .. } => Effect::Docker { cmds, label: title },
-            Confirm::RemoveWorktree(r) => Effect::RemoveWorktree(r),
-        });
+        if !yes {
+            return Outcome::redraw();
+        }
+        let effect = match c {
+            Confirm::Kill(t) => Some(Effect::Kill(t)),
+            Confirm::CloseChat { id, .. } => Some(close_chat(s, id)),
+            Confirm::Quit { .. } => {
+                s.quit = true;
+                None
+            }
+        };
         return Outcome { redraw: true, effect };
     }
     // Tela vermelha de reunião: qualquer tecla para o alerta; z adia; o abre a chamada.
@@ -272,24 +250,13 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
             }
         };
     }
-    if let Some(p) = s.status_pick.take() {
-        return on_status_pick(s, p, k.code);
+    if let Some(p) = s.chat_pick.take() {
+        return on_chat_pick(s, p, k.code);
     }
     if s.show_help || s.show_legend {
         s.show_help = false;
         s.show_legend = false;
         return Outcome::redraw();
-    }
-    if s.filter_editing {
-        return on_filter_key(s, k.code);
-    }
-    if s.focus == Panel::System && k.code == KeyCode::Char('s') {
-        if s.speed.running.is_some() {
-            return Outcome::default();
-        }
-        s.speed.running = Some((crate::providers::speedtest::Phase::Download, 0.0));
-        s.speed.error = None;
-        return Outcome { redraw: true, effect: Some(Effect::SpeedTest) };
     }
     if s.focus == Panel::System && on_system_key(s, k.code) {
         return Outcome::redraw();
@@ -299,46 +266,22 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
     {
         return out;
     }
-    if s.focus == Panel::Docker
-        && let Some(out) = on_docker_key(s, k.code)
+    if s.focus == Panel::Chat
+        && let Some(out) = on_chat_key(s, k.code)
     {
         return out;
     }
-    if s.focus == Panel::Worktrees && matches!(k.code, KeyCode::Left | KeyCode::Right) {
-        const TABS: [WtTab; 3] = [WtTab::Worktrees, WtTab::Claude, WtTab::Desktop];
-        let i = TABS.iter().position(|t| *t == s.wt_tab).unwrap_or(0);
-        let next = if k.code == KeyCode::Right { (i + 1) % 3 } else { (i + 2) % 3 };
-        s.wt_tab = TABS[next];
+    // `a`: permitir desta vez o pedido de permissão, quando há um só pendente.
+    if k.code == KeyCode::Char('a') && !s.pending_permissions().is_empty() {
+        let pend = s.pending_permissions();
+        if pend.len() == 1 {
+            return Outcome { redraw: true, effect: Some(Effect::Permission(pend[0].clone(), true)) };
+        }
+        s.notices.insert(0, format!("{} pedidos de permissão: responda em cada conversa", pend.len()));
         return Outcome::redraw();
     }
-    // `a`: permitir desta vez o pedido de permissão. Na aba Claude Code vale o da
-    // conversa selecionada; em qualquer outro lugar, o único pendente (se houver um só).
-    if k.code == KeyCode::Char('a') && !s.pending_permissions().is_empty() {
-        let selected = (s.active_panel() == Panel::Sessions && s.wt_tab == WtTab::Claude)
-            .then(|| s.session_list().get(s.sess_sel).and_then(|x| x.pending.clone()))
-            .flatten();
-        let pend = s.pending_permissions();
-        let target = selected.or_else(|| (pend.len() == 1).then(|| pend[0].clone()));
-        return match target {
-            Some(p) => Outcome { redraw: true, effect: Some(Effect::Permission(p, true)) },
-            None => {
-                s.notices.insert(0, format!("{} pedidos de permissão: escolha a conversa na aba Claude Code e aperte a", pend.len()));
-                Outcome::redraw()
-            }
-        };
-    }
-    if s.active_panel() == Panel::Worktrees
-        && let Some(out) = on_worktrees_key(s, k.code)
-    {
-        return out;
-    }
-    if s.active_panel() == Panel::Sessions
-        && let Some(out) = on_sessions_key(s, k.code)
-    {
-        return out;
-    }
     match k.code {
-        KeyCode::Char('q') => s.quit = true,
+        KeyCode::Char('q') => return quit(s),
         KeyCode::Char('?') => s.show_help = true,
         KeyCode::Char('i') => s.show_legend = true,
         KeyCode::Tab => s.focus = s.focus.next(),
@@ -351,62 +294,74 @@ fn on_key(s: &mut AppState, k: KeyEvent) -> Outcome {
         KeyCode::Char('x') if !s.notices.is_empty() => {
             s.notices.remove(0);
         }
+        KeyCode::Char('v' | 'V') => return toggle_voice(s),
+        KeyCode::Esc if s.voice != VoiceState::Idle => return cancel_voice(s),
         _ => return Outcome::default(),
     }
     Outcome::redraw()
 }
 
-/// Digitando o filtro das worktrees: todas as teclas vão para o texto.
-fn on_filter_key(s: &mut AppState, code: KeyCode) -> Outcome {
-    match code {
-        KeyCode::Char(c) => s.filter.push(c),
-        KeyCode::Backspace => {
-            if s.filter.pop().is_none() {
-                s.filter_editing = false;
-            }
+/// `v` / Alt+V: começa a gravar; de novo, para e transcreve.
+fn toggle_voice(s: &mut AppState) -> Outcome {
+    let cmd = match s.voice {
+        VoiceState::Idle => {
+            s.voice_take += 1;
+            s.voice = VoiceState::Recording { since: s.now };
+            VoiceCmd::Start(s.voice_take)
         }
-        KeyCode::Esc => {
-            s.filter.clear();
-            s.filter_editing = false;
+        VoiceState::Recording { .. } => {
+            s.voice = VoiceState::Transcribing;
+            VoiceCmd::Stop
         }
-        KeyCode::Enter => s.filter_editing = false,
-        KeyCode::Up => s.wt_sel = s.wt_sel.saturating_sub(1),
-        KeyCode::Down => s.wt_sel += 1,
-        _ => return Outcome::default(),
-    }
-    s.wt_sel = s.wt_sel.min(s.visible_worktrees().len().saturating_sub(1));
-    Outcome::redraw()
-}
-
-/// Seletor de status aberto: ↑↓ e Enter, ou o número direto; Esc cancela.
-fn on_status_pick(s: &mut AppState, mut p: StatusPick, code: KeyCode) -> Outcome {
-    let choice = match code {
-        KeyCode::Esc | KeyCode::Char('q') => return Outcome::redraw(),
-        KeyCode::Enter => CHOICES[p.sel],
-        KeyCode::Char('0') | KeyCode::Backspace | KeyCode::Delete => None,
-        KeyCode::Char(c) if c.is_ascii_digit() => match WtStatus::parse(&c.to_string()) {
-            Some(st) => Some(st),
-            None => {
-                s.status_pick = Some(p);
-                return Outcome::default();
-            }
-        },
-        _ => {
-            step(&mut p.sel, CHOICES.len(), code);
-            s.status_pick = Some(p);
+        VoiceState::Transcribing => {
+            s.notices.insert(0, "ditado: ainda transcrevendo (Esc descarta)".into());
             return Outcome::redraw();
         }
     };
-    if s.wt_status.get(&p.path).copied() == choice {
-        return Outcome::redraw();
+    Outcome { redraw: true, effect: Some(Effect::Voice(cmd)) }
+}
+
+/// Esc com o ditado ligado: descarta a gravação ou o texto que viria dela.
+fn cancel_voice(s: &mut AppState) -> Outcome {
+    s.voice = VoiceState::Idle;
+    s.notices.insert(0, "ditado descartado".into());
+    Outcome { redraw: true, effect: Some(Effect::Voice(VoiceCmd::Cancel)) }
+}
+
+/// Texto ditado: vai para o chat selecionado, sem Enter, para revisar antes de mandar.
+/// Sem chat aberto, vai para a área de transferência.
+fn on_voice_text(s: &mut AppState, take: u64, text: Result<String, String>) -> Outcome {
+    // Descartado com Esc, ou de uma gravação anterior.
+    if take != s.voice_take || s.voice == VoiceState::Idle {
+        return Outcome::default();
     }
-    match choice {
-        Some(st) => s.wt_status.insert(p.path.clone(), st),
-        None => s.wt_status.remove(&p.path),
+    s.voice = VoiceState::Idle;
+    let text = match text {
+        Ok(t) if t.is_empty() => {
+            s.notices.insert(0, "ditado: não ouvi nada".into());
+            return Outcome::redraw();
+        }
+        Ok(t) => t,
+        Err(e) => {
+            s.notices.insert(0, format!("ditado falhou: {e}"));
+            return Outcome::redraw();
+        }
     };
-    s.notices.insert(0, format!("{}: {}", p.name, choice.map_or("sem status", WtStatus::label)));
-    s.notices.truncate(5);
-    Outcome { redraw: true, effect: Some(Effect::SetWtStatus { path: p.path, status: choice }) }
+    match s.selected_chat() {
+        Some(c) if !c.exited => {
+            let id = c.id;
+            if let Ok(mut p) = c.parser.lock() {
+                p.screen_mut().set_scrollback(0);
+            }
+            s.focus = Panel::Chat;
+            s.chat_typing = true;
+            Outcome { redraw: true, effect: Some(Effect::Chat(ChatCmd::Input(id, text.into_bytes()))) }
+        }
+        _ => {
+            s.notices.insert(0, format!("sem chat aberto: copiei o ditado ({})", crate::ui::truncate(&text, 40)));
+            Outcome { redraw: true, effect: Some(Effect::Copy(text)) }
+        }
+    }
 }
 
 /// Move a seleção numa lista de `n` itens.
@@ -449,144 +404,178 @@ fn on_agenda_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
     }
 }
 
-fn on_docker_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
-    let containers = s.docker.data.as_ref().map(|d| d.containers.clone()).unwrap_or_default();
-    if step(&mut s.docker_sel, containers.len(), code) {
-        return Some(Outcome::redraw());
+fn open_chat(dir: std::path::PathBuf, args: Vec<String>, title: String) -> Outcome {
+    Outcome { redraw: true, effect: Some(Effect::Chat(ChatCmd::Open { dir, args, title })) }
+}
+
+/// Esquece o chat e encerra o processo dele.
+fn close_chat(s: &mut AppState, id: u64) -> Effect {
+    s.chats.retain(|c| c.id != id);
+    s.chat_sel = s.chat_sel.min(s.chats.len().saturating_sub(1));
+    s.chat_typing = false;
+    Effect::Chat(ChatCmd::Close(id))
+}
+
+/// `q` / Ctrl+C: com chats rodando, pergunta antes, porque sair encerra todos.
+fn quit(s: &mut AppState) -> Outcome {
+    match s.live_chats() {
+        0 => s.quit = true,
+        chats => s.confirm = Some(Confirm::Quit { chats }),
     }
+    Outcome::redraw()
+}
+
+/// Digitando no chat: tudo vai para o `claude`, menos Ctrl+Q (volta ao cockpit),
+/// Shift+PgUp/PgDn (rola o histórico), Alt+1-9 (troca de chat), Alt+V (ditado) e, com
+/// o ditado ligado, Esc (descarta).
+fn on_chat_typing(s: &mut AppState, mut k: KeyEvent) -> Outcome {
+    let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+    match k.code {
+        KeyCode::Char('v' | 'V') if k.modifiers.contains(KeyModifiers::ALT) => return toggle_voice(s),
+        KeyCode::Esc if s.voice != VoiceState::Idle => return cancel_voice(s),
+        KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+            s.chat_typing = false;
+            return Outcome::redraw();
+        }
+        KeyCode::Char(c @ '1'..='9') if k.modifiers.contains(KeyModifiers::ALT) => {
+            let i = c as usize - '1' as usize;
+            if i < s.chats.len() {
+                s.chat_sel = i;
+                s.chat_typing = !s.chats[i].exited;
+            }
+            return Outcome::redraw();
+        }
+        _ => {}
+    }
+    let Some(c) = s.selected_chat() else {
+        s.chat_typing = false;
+        return Outcome::redraw();
+    };
+    if c.exited {
+        s.chat_typing = false;
+        return Outcome::redraw();
+    }
+    let id = c.id;
+    let Ok(mut p) = c.parser.lock() else { return Outcome::default() };
+    // Na tela alternativa não há histórico aqui: o PgUp/PgDn vai para o programa rolar.
+    if shift && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) && !p.screen().alternate_screen() {
+        let half = (p.screen().size().0 / 2).max(1) as usize;
+        let now = p.screen().scrollback();
+        let to = if k.code == KeyCode::PageUp { now + half } else { now.saturating_sub(half) };
+        p.screen_mut().set_scrollback(to);
+        return Outcome::redraw();
+    }
+    if shift && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) {
+        k.modifiers.remove(KeyModifiers::SHIFT);
+    }
+    let app_cursor = p.screen().application_cursor();
+    // Digitar volta para o fim do histórico, como num terminal.
+    let scrolled = p.screen().scrollback() > 0;
+    p.screen_mut().set_scrollback(0);
+    drop(p);
+    match crate::chat::encode_key(k, app_cursor) {
+        Some(bytes) => Outcome { redraw: scrolled, effect: Some(Effect::Chat(ChatCmd::Input(id, bytes))) },
+        None => Outcome::default(),
+    }
+}
+
+/// Mouse sobre o chat. Se o programa pediu mouse (o `claude` em tela cheia pede), o evento
+/// vai para ele, que rola e seleciona sozinho; senão a roda rola o histórico do emulador.
+/// Clicar entra no modo digitando, como clicar num terminal.
+fn on_chat_mouse(s: &mut AppState, ev: MouseEvent) -> Outcome {
+    let Some(c) = s.selected_chat() else { return Outcome::default() };
+    let (id, exited) = (c.id, c.exited);
+    let Ok(mut p) = c.parser.lock() else { return Outcome::default() };
+    let screen = p.screen();
+    let bytes = (!exited).then(|| crate::chat::encode_mouse(ev, screen.mouse_protocol_mode(), screen.mouse_protocol_encoding())).flatten();
+    let mut redraw = false;
+    if bytes.is_none() && matches!(ev.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+        let now = screen.scrollback();
+        let to = if ev.kind == MouseEventKind::ScrollUp { now + 3 } else { now.saturating_sub(3) };
+        p.screen_mut().set_scrollback(to);
+        redraw = p.screen().scrollback() != now;
+    }
+    drop(p);
+    if ev.kind == MouseEventKind::Down(MouseButton::Left) && !exited && !(s.focus == Panel::Chat && s.chat_typing) {
+        s.focus = Panel::Chat;
+        s.chat_typing = true;
+        redraw = true;
+    }
+    Outcome { redraw, effect: bytes.map(|b| Effect::Chat(ChatCmd::Input(id, b))) }
+}
+
+/// Painel Chat sem estar digitando: abas, abrir e fechar.
+fn on_chat_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
     match code {
-        KeyCode::Char('K') => {
-            let c = containers.get(s.docker_sel)?;
-            s.confirm = Some(Confirm::Docker {
-                title: format!("parar {}", c.name),
-                lines: vec![format!("docker stop {}  ({})", c.name, c.image)],
-                cmds: vec![docker::stop_cmd(c)],
-            });
+        KeyCode::Enter => match s.selected_chat() {
+            Some(c) if !c.exited => {
+                s.chat_typing = true;
+                Some(Outcome::redraw())
+            }
+            Some(c) => {
+                s.notices.insert(0, format!("o chat {} encerrou: x fecha, n abre outro", c.title));
+                Some(Outcome::redraw())
+            }
+            None => Some(new_chat(s)),
+        },
+        KeyCode::Char('n') => Some(new_chat(s)),
+        KeyCode::Left | KeyCode::Right if !s.chats.is_empty() => {
+            let n = s.chats.len();
+            s.chat_sel = if code == KeyCode::Right { (s.chat_sel + 1) % n } else { (s.chat_sel + n - 1) % n };
             Some(Outcome::redraw())
         }
-        KeyCode::Char('X') if !containers.is_empty() => {
-            let cmds = docker::down_all_plan(&containers);
-            let mut lines: Vec<String> = Vec::new();
-            let mut projects: Vec<&str> = containers.iter().filter_map(|c| c.compose.as_ref().map(|p| p.project.as_str())).collect();
-            projects.dedup();
-            for p in &projects {
-                let n = containers.iter().filter(|c| c.compose.as_ref().is_some_and(|x| x.project == *p)).count();
-                lines.push(format!("compose {p}: down --remove-orphans ({n} container{})", if n == 1 { "" } else { "s" }));
+        KeyCode::Char(c @ '1'..='9') => {
+            let i = c as usize - '1' as usize;
+            (i < s.chats.len()).then(|| {
+                s.chat_sel = i;
+                Outcome::redraw()
+            })
+        }
+        KeyCode::Char('x') => {
+            let c = s.selected_chat()?;
+            let (id, title, exited) = (c.id, c.title.clone(), c.exited);
+            if exited {
+                let effect = close_chat(s, id);
+                return Some(Outcome { redraw: true, effect: Some(effect) });
             }
-            let loose = containers.iter().filter(|c| c.compose.is_none()).count();
-            if loose > 0 {
-                lines.push(format!("{loose} container{} fora de compose: docker stop", if loose == 1 { "" } else { "s" }));
-            }
-            s.confirm = Some(Confirm::Docker { title: format!("derrubar {} containers", containers.len()), lines, cmds });
+            s.confirm = Some(Confirm::CloseChat { id, title });
             Some(Outcome::redraw())
         }
         _ => None,
     }
 }
 
-fn on_worktrees_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
-    let n = s.visible_worktrees().len();
-    if step(&mut s.wt_sel, n, code) {
-        return Some(Outcome::redraw());
-    }
+/// Chat novo: abre o seletor de pasta.
+fn new_chat(s: &mut AppState) -> Outcome {
+    s.chat_pick = Some(ChatPick::default());
+    Outcome::redraw()
+}
+
+/// Seletor de pasta do chat novo: digitar filtra, ↑↓ escolhe, Enter abre, Esc cancela.
+fn on_chat_pick(s: &mut AppState, mut p: ChatPick, code: KeyCode) -> Outcome {
+    let dirs = s.chat_dirs(&p.query);
     match code {
-        KeyCode::Char('/') => {
-            s.filter_editing = true;
-            Some(Outcome::redraw())
+        KeyCode::Esc => return Outcome::redraw(),
+        KeyCode::Enter => {
+            return match dirs.into_iter().nth(p.sel) {
+                Some(d) => open_chat(d.path, vec![], d.label),
+                None => Outcome::redraw(),
+            };
         }
-        KeyCode::Esc if !s.filter.is_empty() => {
-            s.filter.clear();
-            s.wt_sel = 0;
-            Some(Outcome::redraw())
+        KeyCode::Up => p.sel = p.sel.saturating_sub(1),
+        KeyCode::Down => p.sel = (p.sel + 1).min(dirs.len().saturating_sub(1)),
+        KeyCode::Backspace => {
+            p.query.pop();
+            p.sel = 0;
         }
-        KeyCode::Char('s') => {
-            let w = s.selected_worktree()?;
-            let current = s.wt_status.get(&w.path).copied();
-            let sel = current.and_then(|c| CHOICES.iter().position(|x| *x == Some(c))).unwrap_or(0);
-            s.status_pick = Some(StatusPick { path: w.path.clone(), name: w.name.clone(), sel });
-            Some(Outcome::redraw())
+        KeyCode::Char(c) => {
+            p.query.push(c);
+            p.sel = 0;
         }
-        KeyCode::Char('D') => {
-            let w = s.selected_worktree()?.clone();
-            if w.is_main {
-                s.notices.insert(0, format!("{} é a pasta principal do repositório: não é excluída por aqui", w.name));
-                return Some(Outcome::redraw());
-            }
-            let repo = s.worktrees.data.as_ref()?.repos.iter().find(|r| r.worktrees.iter().any(|x| x.path == w.path))?.path.clone();
-            let sessions = s.wt_sessions.get(&w.path).map_or(0, |v| v.len());
-            s.confirm = Some(Confirm::RemoveWorktree(RemoveWt {
-                step: 1,
-                name: w.name.clone(),
-                path: w.path.clone(),
-                repo,
-                branch: w.branch.clone(),
-                dirty: w.dirty.unwrap_or(0),
-                sessions,
-                prunable: w.prunable,
-            }));
-            Some(Outcome::redraw())
-        }
-        KeyCode::Enter | KeyCode::Char('C') => {
-            let w = s.selected_worktree()?;
-            if w.prunable {
-                s.notices.insert(0, format!("{} não existe mais em disco (git worktree prune)", w.name));
-                return Some(Outcome::redraw());
-            }
-            let (dir, name) = (w.path.clone(), w.name.clone());
-            if code == KeyCode::Enter {
-                return Some(go_to(s, ExitTarget { dir, then: None }));
-            }
-            Some(open_claude(s, dir, "claude --continue".into(), format!("claude · {name}"), Then::Continue))
-        }
-        _ => None,
+        _ => {}
     }
-}
-
-fn on_sessions_key(s: &mut AppState, code: KeyCode) -> Option<Outcome> {
-    if s.wt_tab == WtTab::Desktop {
-        let n = s.desktop.data.as_ref().map_or(0, |d| d.sessions.len());
-        return step(&mut s.desktop_sel, n, code).then(Outcome::redraw);
-    }
-    let n = s.session_list().len();
-    if step(&mut s.sess_sel, n, code) {
-        return Some(Outcome::redraw());
-    }
-    let sess = (*s.session_list().get(s.sess_sel)?).clone();
-    match code {
-        KeyCode::Enter => Some(go_to(s, ExitTarget { dir: sess.cwd, then: None })),
-        KeyCode::Char('r') if sess.status == Status::Ended => {
-            let cmd = format!("claude --resume {}", sess.id);
-            let title = format!("claude · {}", crate::ui::truncate(&sess.title, 30));
-            Some(open_claude(s, sess.cwd, cmd, title, Then::Resume(sess.id)))
-        }
-        KeyCode::Char('r') => {
-            s.notices.insert(0, format!("\"{}\" já está aberta (pid {}); Enter vai para a pasta dela", sess.title, sess.pid));
-            Some(Outcome::redraw())
-        }
-        _ => None,
-    }
-}
-
-/// Abre o Claude numa aba nova, sem fechar o cockpit. Sem como abrir aba (terminal não
-/// reconhecido), cai no comportamento de sair e trocar de pasta.
-fn open_claude(s: &mut AppState, dir: std::path::PathBuf, cmd: String, title: String, then: Then) -> Outcome {
-    match s.launcher.clone() {
-        Some(launcher) => Outcome { redraw: true, effect: Some(Effect::OpenTab { launcher, dir, cmd, title }) },
-        None => go_to(s, ExitTarget { dir, then: Some(then) }),
-    }
-}
-
-/// Com o wrapper do shell, sai e deixa o `cd` para ele. Sem wrapper, não dá para mudar a
-/// pasta do shell: copia o comando e explica como ligar o wrapper.
-fn go_to(s: &mut AppState, target: ExitTarget) -> Outcome {
-    if s.has_cd_file {
-        s.exit = Some(target);
-        s.quit = true;
-        return Outcome::default();
-    }
-    let cmd = target.command_line();
-    s.notices.insert(0, format!("copiado: {cmd} · para o Enter trocar de pasta, ponha no ~/.zshrc: eval \"$(cockpit shell-init zsh)\""));
-    Outcome { redraw: true, effect: Some(Effect::Copy(cmd)) }
+    s.chat_pick = Some(p);
+    Outcome::redraw()
 }
 
 /// Navegação e ações do painel de sistema. `true` = tecla consumida.
@@ -629,7 +618,10 @@ mod tests {
     fn state() -> AppState {
         let paths = Paths { config_dir: "/x".into(), state_dir: "/x".into(), cache_dir: "/x".into() };
         let themes = ThemeRegistry::load(&PathBuf::from("/nao/existe"), true);
-        AppState::new(Config::default(), paths, themes, 0, vec![])
+        let mut s = AppState::new(Config::default(), paths, themes, 0, vec![]);
+        // Os testes de teclas partem da agenda; o padrão (chat) tem teste próprio.
+        s.focus = Panel::Agenda;
+        s
     }
 
     fn key(c: KeyCode) -> Action {
@@ -654,20 +646,17 @@ mod tests {
 
     #[test]
     fn tab_moves_focus_and_q_quits() {
-        let mut s = state();
-        assert_eq!(s.focus, Panel::Worktrees, "o foco começa no seletor de worktrees");
-        update(&mut s, key(KeyCode::Tab));
-        assert_eq!(s.focus, Panel::System);
-        update(&mut s, key(KeyCode::Tab));
-        assert_eq!(s.focus, Panel::Hero);
+        let paths = Paths { config_dir: "/x".into(), state_dir: "/x".into(), cache_dir: "/x".into() };
+        let fresh = AppState::new(Config::default(), paths, ThemeRegistry::load(&PathBuf::from("/nao/existe"), true), 0, vec![]);
+        assert_eq!(fresh.focus, Panel::Chat, "o foco começa no chat");
+        // na ordem da tela: chat, agenda, relógio, sistema
+        let mut s = fresh;
+        for want in [Panel::Agenda, Panel::Hero, Panel::System, Panel::Chat] {
+            update(&mut s, key(KeyCode::Tab));
+            assert_eq!(s.focus, want);
+        }
         update(&mut s, key(KeyCode::BackTab));
         assert_eq!(s.focus, Panel::System);
-        update(&mut s, key(KeyCode::BackTab));
-        // ←→ trocam a aba do painel de worktrees
-        update(&mut s, key(KeyCode::Right));
-        assert_eq!(s.active_panel(), Panel::Sessions);
-        update(&mut s, key(KeyCode::Left));
-        assert_eq!(s.active_panel(), Panel::Worktrees);
         update(&mut s, key(KeyCode::Char('q')));
         assert!(s.quit);
     }
@@ -755,115 +744,6 @@ mod tests {
         update(s, Action::Worktrees(Snapshot::ok(snap)));
     }
 
-    fn with_sessions(s: &mut AppState) {
-        use crate::providers::claude::Session;
-        let sess = |id: &str, cwd: &str, st: Status| Session {
-            id: id.into(),
-            pid: 10,
-            cwd: cwd.into(),
-            status: st,
-            title: format!("t-{id}"),
-            ..Default::default()
-        };
-        let snap = SessionsSnapshot {
-            live: vec![
-                sess("a", "/h/v360/.claude/worktrees/processable-file-cfs/src", Status::Waiting),
-                sess("b", "/h/v360", Status::Busy),
-            ],
-            recent: vec![sess("c", "/h/v360/.claude/worktrees/build-s4", Status::Ended)],
-        };
-        update(s, Action::Sessions(Snapshot::ok(snap)));
-    }
-
-    #[test]
-    fn enter_on_worktree_exits_with_cd_when_wrapped() {
-        let mut s = state();
-        s.has_cd_file = true;
-        with_worktrees(&mut s);
-        update(&mut s, key(KeyCode::Down));
-        update(&mut s, key(KeyCode::Enter));
-        assert!(s.quit);
-        assert_eq!(s.exit, Some(ExitTarget { dir: "/h/v360/.claude/worktrees/processable-file-cfs".into(), then: None }));
-    }
-
-    #[test]
-    fn remove_worktree_needs_two_confirmations() {
-        let mut s = state();
-        with_worktrees(&mut s);
-        with_sessions(&mut s);
-        // a principal não sai
-        update(&mut s, key(KeyCode::Char('D')));
-        assert!(s.confirm.is_none() && s.notices[0].contains("principal"));
-        update(&mut s, key(KeyCode::Down));
-        update(&mut s, key(KeyCode::Char('D')));
-        let Some(Confirm::RemoveWorktree(r)) = s.confirm.clone() else { panic!("{:?}", s.confirm) };
-        assert_eq!((r.step, r.name.as_str(), r.sessions), (1, "processable-file-cfs", 1));
-        assert_eq!(r.repo, std::path::PathBuf::from("/h/v360"));
-        // y leva ao segundo aviso; um segundo y não apaga
-        update(&mut s, key(KeyCode::Char('y')));
-        assert!(matches!(&s.confirm, Some(Confirm::RemoveWorktree(r)) if r.step == 2));
-        let out = update(&mut s, key(KeyCode::Char('y')));
-        assert!(out.effect.is_none() && s.confirm.is_none(), "no segundo aviso só Enter confirma");
-        // de novo, agora até o fim
-        update(&mut s, key(KeyCode::Char('D')));
-        update(&mut s, key(KeyCode::Char('y')));
-        let out = update(&mut s, key(KeyCode::Enter));
-        assert!(matches!(out.effect, Some(Effect::RemoveWorktree(ref r)) if r.name == "processable-file-cfs"));
-    }
-
-    #[test]
-    fn s_picks_a_status_for_the_selected_worktree() {
-        let mut s = state();
-        with_worktrees(&mut s);
-        update(&mut s, key(KeyCode::Down));
-        update(&mut s, key(KeyCode::Char('s')));
-        let wt: std::path::PathBuf = "/h/v360/.claude/worktrees/processable-file-cfs".into();
-        assert_eq!(s.status_pick, Some(StatusPick { path: wt.clone(), name: "processable-file-cfs".into(), sel: 0 }));
-        // com o seletor aberto, q não sai e j só move
-        update(&mut s, key(KeyCode::Char('j')));
-        update(&mut s, key(KeyCode::Char('j')));
-        let out = update(&mut s, key(KeyCode::Enter));
-        assert!(!s.quit && s.status_pick.is_none());
-        assert_eq!(out.effect, Some(Effect::SetWtStatus { path: wt.clone(), status: Some(WtStatus::RevisaoManual) }));
-        assert_eq!(s.wt_status.get(&wt), Some(&WtStatus::RevisaoManual));
-        // reabre já no atual; número escolhe direto; 0 limpa; Esc não muda nada
-        update(&mut s, key(KeyCode::Char('s')));
-        assert_eq!(s.status_pick.as_ref().map(|p| p.sel), Some(2));
-        let out = update(&mut s, key(KeyCode::Char('2')));
-        assert_eq!(out.effect, Some(Effect::SetWtStatus { path: wt.clone(), status: Some(WtStatus::Wip) }));
-        update(&mut s, key(KeyCode::Char('s')));
-        assert!(update(&mut s, key(KeyCode::Esc)).effect.is_none());
-        assert_eq!(s.wt_status.get(&wt), Some(&WtStatus::Wip));
-        update(&mut s, key(KeyCode::Char('s')));
-        let out = update(&mut s, key(KeyCode::Char('0')));
-        assert_eq!(out.effect, Some(Effect::SetWtStatus { path: wt.clone(), status: None }));
-        assert!(s.wt_status.is_empty());
-        // o filtro casa pelo status
-        update(&mut s, Action::WtStatuses([(wt, WtStatus::Deploy)].into()));
-        s.filter = "deploy".into();
-        assert_eq!(s.visible_worktrees().len(), 1);
-    }
-
-    #[test]
-    fn continue_opens_a_new_tab_and_keeps_running() {
-        let mut s = state();
-        s.has_cd_file = true;
-        s.launcher = Some(crate::terminal::Launcher::Tmux);
-        with_worktrees(&mut s);
-        update(&mut s, key(KeyCode::Down));
-        let out = update(&mut s, key(KeyCode::Char('C')));
-        assert!(!s.quit, "o cockpit continua aberto");
-        assert_eq!(
-            out.effect,
-            Some(Effect::OpenTab {
-                launcher: crate::terminal::Launcher::Tmux,
-                dir: "/h/v360/.claude/worktrees/processable-file-cfs".into(),
-                cmd: "claude --continue".into(),
-                title: "claude · processable-file-cfs".into(),
-            })
-        );
-    }
-
     #[test]
     fn i_opens_the_legend_and_any_key_closes() {
         let mut s = state();
@@ -871,137 +751,6 @@ mod tests {
         assert!(s.show_legend);
         update(&mut s, key(KeyCode::Char('q')));
         assert!(!s.show_legend && !s.quit);
-    }
-
-    #[test]
-    fn continue_key_and_no_wrapper_copies() {
-        let mut s = state();
-        with_worktrees(&mut s);
-        let out = update(&mut s, key(KeyCode::Char('C')));
-        assert!(!s.quit, "sem wrapper não sai");
-        assert_eq!(out.effect, Some(Effect::Copy("cd /h/v360 && claude --continue".into())));
-        assert!(s.notices[0].starts_with("copiado"));
-    }
-
-    #[test]
-    fn filter_types_everything_and_narrows() {
-        let mut s = state();
-        with_worktrees(&mut s);
-        update(&mut s, key(KeyCode::Char('/')));
-        update(&mut s, key(KeyCode::Char('q')));
-        assert!(!s.quit, "q dentro do filtro é texto");
-        assert!(s.visible_worktrees().is_empty());
-        update(&mut s, key(KeyCode::Backspace));
-        for c in "cfs".chars() {
-            update(&mut s, key(KeyCode::Char(c)));
-        }
-        // "cfs" casa com processable-file-cfs e também com b-processable-file-cfs; build-s4 não
-        let names: Vec<String> = s.visible_worktrees().iter().map(|(r, w)| s.worktrees.data.as_ref().unwrap().repos[*r].worktrees[*w].name.clone()).collect();
-        assert_eq!(names, ["processable-file-cfs"]);
-        update(&mut s, key(KeyCode::Enter));
-        assert!(!s.filter_editing && s.filter == "cfs");
-        update(&mut s, key(KeyCode::Esc));
-        assert_eq!(s.visible_worktrees().len(), 3);
-    }
-
-    #[test]
-    fn sessions_map_to_the_deepest_worktree() {
-        let mut s = state();
-        with_worktrees(&mut s);
-        with_sessions(&mut s);
-        assert_eq!(s.wt_sessions.get(std::path::Path::new("/h/v360/.claude/worktrees/processable-file-cfs")), Some(&vec![0]));
-        assert_eq!(s.wt_sessions.get(std::path::Path::new("/h/v360")), Some(&vec![1]));
-        assert_eq!(s.waiting_count(), 1);
-        let first = s.session_list()[0].clone();
-        assert_eq!(s.session_place(&first), "v360/processable-file-cfs");
-    }
-
-    #[test]
-    fn resume_only_for_ended_sessions() {
-        let mut s = state();
-        s.has_cd_file = true;
-        with_worktrees(&mut s);
-        with_sessions(&mut s);
-        s.focus = Panel::Worktrees;
-        s.wt_tab = WtTab::Claude;
-        update(&mut s, key(KeyCode::Char('r')));
-        assert!(!s.quit && s.notices[0].contains("já está aberta"));
-        update(&mut s, key(KeyCode::Char('G')));
-        // sem lançador de aba: sai e retoma pelo wrapper
-        update(&mut s, key(KeyCode::Char('r')));
-        assert_eq!(
-            s.exit,
-            Some(ExitTarget { dir: "/h/v360/.claude/worktrees/build-s4".into(), then: Some(Then::Resume("c".into())) })
-        );
-        // com lançador: aba nova, cockpit segue aberto
-        let mut s2 = state();
-        s2.launcher = Some(crate::terminal::Launcher::Tmux);
-        with_worktrees(&mut s2);
-        with_sessions(&mut s2);
-        s2.focus = Panel::Worktrees;
-        s2.wt_tab = WtTab::Claude;
-        update(&mut s2, key(KeyCode::Char('G')));
-        let out = update(&mut s2, key(KeyCode::Char('r')));
-        assert!(!s2.quit);
-        assert!(matches!(out.effect, Some(Effect::OpenTab { ref cmd, .. }) if cmd == "claude --resume c"));
-    }
-
-    #[test]
-    fn session_selection_follows_the_conversation() {
-        let mut s = state();
-        with_sessions(&mut s);
-        s.sess_sel = 1; // "b"
-        use crate::providers::claude::Session;
-        let snap = SessionsSnapshot {
-            live: vec![
-                Session { id: "b".into(), status: Status::Waiting, ..Default::default() },
-                Session { id: "a".into(), status: Status::Idle, ..Default::default() },
-            ],
-            recent: vec![],
-        };
-        update(&mut s, Action::Sessions(Snapshot::ok(snap)));
-        assert_eq!(s.session_list()[s.sess_sel].id, "b");
-    }
-
-    fn with_containers(s: &mut AppState) {
-        use crate::providers::docker::{Compose, Container};
-        let c = |id: &str, name: &str, project: Option<&str>| Container {
-            id: id.into(),
-            name: name.into(),
-            image: "img".into(),
-            compose: project.map(|p| Compose { project: p.into(), ..Default::default() }),
-            ..Default::default()
-        };
-        let snap = DockerSnapshot { containers: vec![c("a1", "v360_db", Some("v360")), c("a2", "v360_redis", Some("v360")), c("b1", "solto", None)] };
-        update(s, Action::Docker(Snapshot::ok(snap)));
-        s.focus = Panel::Docker;
-    }
-
-    #[test]
-    fn docker_stop_one_needs_confirmation() {
-        let mut s = state();
-        with_containers(&mut s);
-        update(&mut s, key(KeyCode::Down));
-        update(&mut s, key(KeyCode::Char('K')));
-        assert!(matches!(&s.confirm, Some(Confirm::Docker { title, .. }) if title == "parar v360_redis"));
-        let out = update(&mut s, key(KeyCode::Char('y')));
-        match out.effect {
-            Some(Effect::Docker { cmds, .. }) => assert_eq!(cmds[0].display(), "docker stop a2"),
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn docker_down_all_explains_and_cancels() {
-        let mut s = state();
-        with_containers(&mut s);
-        update(&mut s, key(KeyCode::Char('X')));
-        let Some(Confirm::Docker { title, lines, cmds }) = s.confirm.clone() else { panic!() };
-        assert_eq!(title, "derrubar 3 containers");
-        assert_eq!(lines, ["compose v360: down --remove-orphans (2 containers)", "1 container fora de compose: docker stop"]);
-        assert_eq!(cmds.iter().map(|c| c.display()).collect::<Vec<_>>(), ["docker compose -p v360 down --remove-orphans", "docker stop b1"]);
-        let out = update(&mut s, key(KeyCode::Char('n')));
-        assert!(out.effect.is_none() && s.confirm.is_none(), "qualquer tecla que não y cancela");
     }
 
     fn with_meeting_in(s: &mut AppState, mins: i64) {
@@ -1016,6 +765,111 @@ mod tests {
             ..Default::default()
         };
         update(s, Action::Calendar(Snapshot::ok(CalendarSnapshot { events: vec![ev], calendars: vec![] })));
+    }
+
+    fn with_chat(s: &mut AppState) -> u64 {
+        let parser = std::sync::Arc::new(std::sync::Mutex::new(vt100::Parser::new(24, 80, 100)));
+        update(s, Action::ChatOpened(crate::chat::ChatView { id: 7, title: "v360".into(), parser, exited: false }));
+        7
+    }
+
+    #[test]
+    fn chat_typing_forwards_keys_until_ctrl_q() {
+        let mut s = state();
+        let id = with_chat(&mut s);
+        assert_eq!((s.focus, s.chat_typing), (Panel::Chat, true), "chat novo já recebe as teclas");
+        // q e Ctrl+C vão para o claude, não fecham o cockpit
+        let out = update(&mut s, key(KeyCode::Char('q')));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, b"q".to_vec()))));
+        let out = update(&mut s, Action::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, vec![3]))));
+        assert!(!s.quit);
+        let out = update(&mut s, Action::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, b"\t".to_vec()))));
+        update(&mut s, Action::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)));
+        assert!(!s.chat_typing);
+        update(&mut s, key(KeyCode::Tab));
+        assert_eq!(s.focus, Panel::Agenda, "fora do modo digitando, Tab volta a trocar o foco");
+    }
+
+    #[test]
+    fn mouse_wheel_goes_to_the_chat_or_scrolls_its_history() {
+        let mut s = state();
+        let id = with_chat(&mut s);
+        let wheel = |kind| Action::ChatMouse(MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE });
+        // tela normal com histórico: a roda rola o emulador
+        s.chats[0].parser.lock().unwrap().process(&"linha\r\n".repeat(40).into_bytes());
+        let out = update(&mut s, wheel(MouseEventKind::ScrollUp));
+        assert!(out.redraw && out.effect.is_none());
+        assert_eq!(s.chats[0].parser.lock().unwrap().screen().scrollback(), 3);
+        // tela cheia com mouse ligado (como o claude): o evento vai para o programa
+        s.chats[0].parser.lock().unwrap().process(b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+        let out = update(&mut s, wheel(MouseEventKind::ScrollUp));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, b"\x1b[<64;1;1M".to_vec()))));
+        // e o Shift+PgUp vira PgUp puro para ele
+        let out = update(&mut s, Action::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::SHIFT)));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, b"\x1b[5~".to_vec()))));
+    }
+
+    #[test]
+    fn quitting_with_open_chats_asks_first() {
+        let mut s = state();
+        with_chat(&mut s);
+        s.chat_typing = false;
+        update(&mut s, key(KeyCode::Char('q')));
+        assert!(!s.quit && matches!(s.confirm, Some(Confirm::Quit { chats: 1 })));
+        update(&mut s, key(KeyCode::Char('n')));
+        assert!(!s.quit && s.confirm.is_none(), "qualquer outra tecla cancela");
+        update(&mut s, key(KeyCode::Char('q')));
+        update(&mut s, key(KeyCode::Char('y')));
+        assert!(s.quit);
+    }
+
+    #[test]
+    fn closing_a_running_chat_asks_and_kills_it() {
+        let mut s = state();
+        let id = with_chat(&mut s);
+        s.chat_typing = false;
+        update(&mut s, key(KeyCode::Char('x')));
+        assert!(matches!(s.confirm, Some(Confirm::CloseChat { .. })));
+        let out = update(&mut s, key(KeyCode::Char('y')));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Close(id))));
+        assert!(s.chats.is_empty());
+        // encerrado sozinho: fecha sem perguntar
+        let id = with_chat(&mut s);
+        update(&mut s, Action::ChatExited(id));
+        assert!(!s.chat_typing);
+        let out = update(&mut s, key(KeyCode::Char('x')));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Close(id))));
+    }
+
+    #[test]
+    fn n_picks_the_folder_then_opens_the_chat() {
+        let mut s = state();
+        with_worktrees(&mut s);
+        s.focus = Panel::Chat;
+        update(&mut s, key(KeyCode::Char('n')));
+        assert!(s.chat_pick.is_some());
+        let labels: Vec<String> = s.chat_dirs("").into_iter().map(|d| d.label).collect();
+        assert_eq!(labels, ["~", "v360", "v360/processable-file-cfs", "v360/build-s4"]);
+        // digitar filtra (até o n, que não abre outro seletor), Enter abre
+        for c in "cfs".chars() {
+            update(&mut s, key(KeyCode::Char(c)));
+        }
+        assert_eq!(s.chat_pick.as_ref().unwrap().query, "cfs");
+        let out = update(&mut s, key(KeyCode::Enter));
+        assert!(s.chat_pick.is_none());
+        match out.effect {
+            Some(Effect::Chat(ChatCmd::Open { dir, title, .. })) => {
+                assert_eq!(dir, PathBuf::from("/h/v360/.claude/worktrees/processable-file-cfs"));
+                assert_eq!(title, "v360/processable-file-cfs");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Esc cancela sem abrir nada
+        update(&mut s, key(KeyCode::Char('n')));
+        let out = update(&mut s, key(KeyCode::Esc));
+        assert!(out.effect.is_none() && s.chat_pick.is_none());
     }
 
     #[test]
@@ -1057,21 +911,6 @@ mod tests {
     }
 
     #[test]
-    fn s_starts_one_speedtest_at_a_time() {
-        use crate::providers::speedtest::{Phase, SpeedEvent, SpeedResult};
-        let mut s = state();
-        s.focus = Panel::System;
-        let out = update(&mut s, key(KeyCode::Char('s')));
-        assert_eq!(out.effect, Some(Effect::SpeedTest));
-        assert!(update(&mut s, key(KeyCode::Char('s'))).effect.is_none(), "já rodando");
-        update(&mut s, Action::Speed(SpeedEvent::Progress(Phase::Upload, 0.0)));
-        assert_eq!(s.speed.running, Some((Phase::Upload, 0.0)));
-        let r = SpeedResult { down_mbps: 41.0, up_mbps: 21.0, at: s.now };
-        update(&mut s, Action::Speed(SpeedEvent::Done(r.clone())));
-        assert_eq!((s.speed.running, s.speed.last.clone()), (None, Some(r)));
-    }
-
-    #[test]
     fn reload_applies_live_settings_and_flags_the_rest() {
         let mut s = state();
         let mut cfg = s.config.clone();
@@ -1093,7 +932,7 @@ mod tests {
     }
 
     fn with_pending(s: &mut AppState, pids: &[u32]) {
-        use crate::{claude_hook::Pending, providers::claude::Session};
+        use crate::{claude_hook::Pending, providers::claude::{Session, Status}};
         let live = pids
             .iter()
             .enumerate()
@@ -1112,34 +951,82 @@ mod tests {
     fn a_allows_the_only_pending_request_from_anywhere() {
         let mut s = state();
         with_pending(&mut s, &[10]);
-        s.focus = Panel::Docker;
+        s.focus = Panel::Agenda;
         let out = update(&mut s, key(KeyCode::Char('a')));
         assert!(matches!(out.effect, Some(Effect::Permission(ref p, true)) if p.id == "p0"));
     }
 
     #[test]
-    fn a_with_several_pending_uses_the_selected_conversation() {
+    fn a_with_several_pending_only_explains() {
         let mut s = state();
         with_pending(&mut s, &[10, 11]);
-        s.focus = Panel::Docker;
+        s.focus = Panel::Agenda;
         let out = update(&mut s, key(KeyCode::Char('a')));
         assert!(out.effect.is_none() && s.notices[0].contains("2 pedidos"));
-        s.focus = Panel::Worktrees;
-        s.wt_tab = WtTab::Claude;
-        update(&mut s, key(KeyCode::Down));
-        let out = update(&mut s, key(KeyCode::Char('a')));
-        assert!(matches!(out.effect, Some(Effect::Permission(ref p, true)) if p.id == "p1"));
     }
 
     #[test]
-    fn arrows_cycle_three_tabs() {
+    fn v_records_and_the_text_lands_in_the_chat_without_enter() {
         let mut s = state();
-        for want in [WtTab::Claude, WtTab::Desktop, WtTab::Worktrees] {
-            update(&mut s, key(KeyCode::Right));
-            assert_eq!(s.wt_tab, want);
-        }
-        update(&mut s, key(KeyCode::Left));
-        assert_eq!(s.wt_tab, WtTab::Desktop);
+        let id = with_chat(&mut s);
+        s.chat_typing = false;
+        s.focus = Panel::Agenda;
+        let out = update(&mut s, key(KeyCode::Char('v')));
+        assert_eq!(out.effect, Some(Effect::Voice(VoiceCmd::Start(1))));
+        assert!(matches!(s.voice, VoiceState::Recording { .. }));
+        let out = update(&mut s, key(KeyCode::Char('v')));
+        assert_eq!(out.effect, Some(Effect::Voice(VoiceCmd::Stop)));
+        assert_eq!(s.voice, VoiceState::Transcribing);
+        let out = update(&mut s, Action::VoiceText { take: 1, text: Ok("roda os testes".into()) });
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, b"roda os testes".to_vec()))));
+        assert_eq!(s.voice, VoiceState::Idle);
+        assert_eq!((s.focus, s.chat_typing), (Panel::Chat, true), "o chat fica pronto para o Enter");
+    }
+
+    #[test]
+    fn alt_v_dictates_while_typing_and_esc_discards() {
+        let mut s = state();
+        let id = with_chat(&mut s);
+        let alt_v = Action::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
+        let out = update(&mut s, alt_v);
+        assert_eq!(out.effect, Some(Effect::Voice(VoiceCmd::Start(1))));
+        // v puro continua indo para o claude
+        let out = update(&mut s, key(KeyCode::Char('v')));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, b"v".to_vec()))));
+        // Esc descarta em vez de ir para o claude; o texto que chegar depois é ignorado
+        let out = update(&mut s, key(KeyCode::Esc));
+        assert_eq!(out.effect, Some(Effect::Voice(VoiceCmd::Cancel)));
+        let out = update(&mut s, Action::VoiceText { take: 1, text: Ok("tarde demais".into()) });
+        assert!(out.effect.is_none());
+        // parado, Esc volta a ir para o claude
+        let out = update(&mut s, key(KeyCode::Esc));
+        assert_eq!(out.effect, Some(Effect::Chat(ChatCmd::Input(id, b"\x1b".to_vec()))));
+    }
+
+    #[test]
+    fn dictation_without_a_chat_is_copied_and_errors_become_notices() {
+        let mut s = state();
+        update(&mut s, key(KeyCode::Char('v')));
+        update(&mut s, key(KeyCode::Char('v')));
+        let out = update(&mut s, Action::VoiceText { take: 1, text: Ok("olá".into()) });
+        assert_eq!(out.effect, Some(Effect::Copy("olá".into())));
+        update(&mut s, key(KeyCode::Char('v')));
+        let out = update(&mut s, Action::VoiceText { take: 2, text: Err("o gravador não gravou nada".into()) });
+        assert!(out.effect.is_none() && s.voice == VoiceState::Idle);
+        assert!(s.notices[0].contains("ditado falhou"), "{}", s.notices[0]);
+    }
+
+    #[test]
+    fn recording_stops_itself_at_max_seconds() {
+        let mut s = state();
+        update(&mut s, key(KeyCode::Char('v')));
+        let start = s.now;
+        let out = update(&mut s, Action::Tick(start + chrono::Duration::seconds(10)));
+        assert!(out.effect.is_none());
+        let max = s.config.voice.max_seconds;
+        let out = update(&mut s, Action::Tick(start + chrono::Duration::seconds(max)));
+        assert_eq!(out.effect, Some(Effect::Voice(VoiceCmd::Stop)));
+        assert_eq!(s.voice, VoiceState::Transcribing);
     }
 
     #[test]

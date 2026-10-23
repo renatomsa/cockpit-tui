@@ -25,8 +25,8 @@ use crate::{
     ui,
 };
 
-/// Roda até o usuário sair. Devolve o destino escolhido (Enter numa worktree/sessão).
-pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>> {
+/// Roda até o usuário sair.
+pub async fn run(mut state: AppState) -> Result<()> {
     let (geo_tx, mut geo_rx) = watch::channel(Snapshot::default());
     providers::geo::spawn(state.config.location.clone(), state.paths.cache_dir.join("geo.json"), geo_tx);
     // O provider com `city` fixa publica e termina: pega o valor já disponível.
@@ -37,33 +37,15 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
 
     let (sys_tx, mut sys_rx) = watch::channel(Snapshot::default());
     providers::system::spawn(state.config.system.clone(), sys_tx);
-    let (ping_tx, mut ping_rx) = watch::channel(Snapshot::default());
-    providers::ping::spawn(state.config.system.ping_target.clone(), state.config.system.ping_interval_secs, ping_tx);
     let (wt_tx, mut wt_rx) = watch::channel(Snapshot::default());
     providers::git::spawn(state.config.worktrees.clone(), wt_tx);
     let (sess_tx, mut sess_rx) = watch::channel(Snapshot::default());
     providers::claude::spawn(state.config.claude.clone(), state.paths.state_dir.clone(), sess_tx);
-    let (desk_tx, mut desk_rx) = watch::channel(Snapshot::default());
-    let desktop = crate::platform::is_wsl();
-    if desktop {
-        providers::desktop::spawn(desk_tx);
-    }
-    let mut desk_alive = desktop;
     let (usage_tx, mut usage_rx) = watch::channel(Snapshot::default());
     providers::usage::spawn(state.config.claude.clone(), usage_tx);
-    let (specs_tx, mut specs_rx) = watch::channel(Snapshot::default());
-    providers::specs::spawn(specs_tx);
-    let (net_tx, mut net_rx) = watch::channel(Snapshot::default());
-    let host_net = state.config.network.wsl_host && crate::platform::is_wsl();
-    if host_net {
-        providers::hostnet::spawn(net_tx);
-    }
-    let mut net_alive = host_net;
     let (wx_tx, mut wx_rx) = watch::channel(Snapshot::default());
     providers::weather::spawn(state.config.weather.clone(), geo_rx.clone(), wx_tx);
     let mut wx_alive = state.config.weather.enabled;
-    let (docker_tx, mut docker_rx) = watch::channel(Snapshot::default());
-    providers::docker::spawn(docker_tx);
     let (cal_tx, mut cal_rx) = watch::channel(Snapshot::default());
     if state.demo_agenda {
         update(&mut state, Action::Calendar(Snapshot::ok(providers::calendar::demo(Utc::now()))));
@@ -71,10 +53,14 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
         providers::calendar::spawn(state.config.calendar.clone(), state.paths.google_token(), state.paths.ical_store(), cal_tx);
     }
     let mut cal_alive = !state.demo_agenda;
-    let (mut sys_alive, mut ping_alive, mut wt_alive, mut sess_alive, mut usage_alive, mut specs_alive, mut docker_alive) =
-        (true, true, true, true, true, true, true);
+    let (mut sys_alive, mut wt_alive, mut sess_alive, mut usage_alive) = (true, true, true, true);
     // Resultados de efeitos (ex.: o kill) voltam como ações.
     let (act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
+    // Chats embutidos: processos aqui; a tela de cada um vai para o estado.
+    let mut hub = crate::chat::Hub::new(act_tx.clone());
+    let chat_dirty = hub.dirty.clone();
+    // Ditado: o processo do gravador fica aqui; o texto volta como ação.
+    let mut voice = crate::voice::Voice::new(act_tx.clone());
 
     // Recarga a quente: config.toml e a pasta de temas.
     let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(1);
@@ -97,32 +83,24 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
         }
     }
 
-    // Status das worktrees: o `cockpit status` grava de outro terminal e a coluna acompanha.
-    let (st_tx, mut st_rx) = mpsc::channel::<()>(1);
-    let st_file = state.paths.wt_status_file();
-    let st_name = st_file.file_name().map(|n| n.to_os_string());
-    let mut st_watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res
-            && providers::is_change(&ev)
-            && ev.paths.iter().any(|p| p.file_name().map(|n| n.to_os_string()) == st_name)
-        {
-            let _ = st_tx.try_send(());
-        }
-    })
-    .map_err(|e| tracing::warn!("sem acompanhar o status das worktrees: {e}"))
-    .ok();
-    if let Some(w) = st_watcher.as_mut() {
-        use notify::Watcher;
-        let _ = std::fs::create_dir_all(&state.paths.state_dir);
-        let _ = w.watch(&state.paths.state_dir, notify::RecursiveMode::NonRecursive);
-    }
-
     let mut terminal = ratatui::init();
+    // Colar chega como um evento só, e não como uma tecla por caractere (o Enter de cada
+    // linha mandaria a mensagem do chat pela metade).
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+    // Mouse para a roda e os cliques chegarem ao chat (o `claude` em tela cheia rola com
+    // eles). Selecionar texto do resto do cockpit passa a ser com Shift+arrastar.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     let mut events = EventStream::new();
     let mut redraw = true;
 
     let result = loop {
         if redraw {
+            // O PTY dos chats acompanha o tamanho do painel.
+            if let Ok(size) = terminal.size()
+                && let Some(r) = ui::layout::compute(ratatui::layout::Rect::new(0, 0, size.width, size.height), &state.config.layout).chat
+            {
+                hub.resize(r.height.saturating_sub(2), r.width.saturating_sub(2), &state.chats);
+            }
             if let Err(e) = terminal.draw(|f| ui::draw(f, &state)) {
                 break Err(e.into());
             }
@@ -133,6 +111,13 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
             ev = events.next() => match ev {
                 Some(Ok(Event::Key(k))) => Action::Key(k),
                 Some(Ok(Event::Resize(..))) => Action::Resize,
+                Some(Ok(Event::Paste(text))) => Action::Paste(text),
+                Some(Ok(Event::Mouse(m))) => match chat_screen(&terminal, &state) {
+                    Some(r) if r.contains(ratatui::layout::Position::new(m.column, m.row)) => {
+                        Action::ChatMouse(crossterm::event::MouseEvent { column: m.column - r.x, row: m.row - r.y, ..m })
+                    }
+                    _ => continue,
+                },
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => break Err(e.into()),
                 None => break Ok(()),
@@ -146,10 +131,6 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 Ok(()) => Action::System(Box::new(sys_rx.borrow_and_update().clone())),
                 Err(_) => { sys_alive = false; continue }
             },
-            changed = ping_rx.changed(), if ping_alive => match changed {
-                Ok(()) => Action::Ping(ping_rx.borrow_and_update().clone()),
-                Err(_) => { ping_alive = false; continue }
-            },
             changed = wt_rx.changed(), if wt_alive => match changed {
                 Ok(()) => Action::Worktrees(wt_rx.borrow_and_update().clone()),
                 Err(_) => { wt_alive = false; continue }
@@ -162,21 +143,9 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 Ok(()) => Action::Usage(usage_rx.borrow_and_update().clone()),
                 Err(_) => { usage_alive = false; continue }
             },
-            changed = specs_rx.changed(), if specs_alive => match changed {
-                Ok(()) => Action::Specs(specs_rx.borrow_and_update().clone()),
-                Err(_) => { specs_alive = false; continue }
-            },
-            changed = docker_rx.changed(), if docker_alive => match changed {
-                Ok(()) => Action::Docker(docker_rx.borrow_and_update().clone()),
-                Err(_) => { docker_alive = false; continue }
-            },
             changed = cal_rx.changed(), if cal_alive => match changed {
                 Ok(()) => Action::Calendar(cal_rx.borrow_and_update().clone()),
                 Err(_) => { cal_alive = false; continue }
-            },
-            changed = net_rx.changed(), if net_alive => match changed {
-                Ok(()) => Action::HostNet(net_rx.borrow_and_update().clone()),
-                Err(_) => { net_alive = false; continue }
             },
             changed = wx_rx.changed(), if wx_alive => match changed {
                 Ok(()) => Action::Weather(wx_rx.borrow_and_update().clone()),
@@ -199,33 +168,48 @@ pub async fn run(mut state: AppState) -> Result<Option<crate::shell::ExitTarget>
                 while cfg_rx.try_recv().is_ok() {}
                 continue;
             }
-            Some(()) = st_rx.recv() => {
-                let (file, tx) = (st_file.clone(), act_tx.clone());
-                tokio::task::spawn_blocking(move || {
-                    let _ = tx.send(Action::WtStatuses(crate::wt_status::load(&file)));
-                });
-                while st_rx.try_recv().is_ok() {}
+            Some(a) = act_rx.recv() => a,
+            () = chat_dirty.notified() => {
+                // Junta a saída de alguns milissegundos num quadro só.
+                tokio::time::sleep(Duration::from_millis(8)).await;
+                redraw = true;
                 continue;
             }
-            changed = desk_rx.changed(), if desk_alive => match changed {
-                Ok(()) => Action::Desktop(desk_rx.borrow_and_update().clone()),
-                Err(_) => { desk_alive = false; continue }
-            },
-            Some(a) = act_rx.recv() => a,
         };
 
         let out = update(&mut state, action);
         redraw |= out.redraw;
-        if let Some(effect) = out.effect {
-            run_effect(&state, effect, act_tx.clone());
+        match out.effect {
+            Some(Effect::Chat(cmd)) => {
+                if let Some(a) = hub.apply(cmd) {
+                    redraw |= update(&mut state, a).redraw;
+                }
+            }
+            Some(Effect::Voice(cmd)) => {
+                if let Some(a) = voice.apply(cmd, &state.config.voice) {
+                    redraw |= update(&mut state, a).redraw;
+                }
+            }
+            Some(effect) => run_effect(&state, effect, act_tx.clone()),
+            None => {}
         }
         if state.quit {
             break Ok(());
         }
     };
 
+    drop(hub);
+    drop(voice);
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture, crossterm::event::DisableBracketedPaste);
     ratatui::restore();
-    result.map(|()| state.exit.take())
+    result
+}
+
+/// Tela do chat na janela (o painel por dentro da moldura), se o layout mostra o chat.
+fn chat_screen(terminal: &ratatui::DefaultTerminal, state: &AppState) -> Option<ratatui::layout::Rect> {
+    let size = terminal.size().ok()?;
+    let r = ui::layout::compute(ratatui::layout::Rect::new(0, 0, size.width, size.height), &state.config.layout).chat?;
+    Some(ratatui::layout::Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), r.height.saturating_sub(2)))
 }
 
 /// Próxima virada de segundo do relógio de parede (+2 ms de folga), para os
@@ -248,17 +232,9 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
                 }
             });
         }
+        // Executados no loop, que é o dono do `Hub` e do `Voice`.
+        Effect::Chat(_) | Effect::Voice(_) => {}
         Effect::Copy(text) => crate::shell::osc52_copy(&text),
-        Effect::SetWtStatus { path, status } => {
-            let file = state.paths.wt_status_file();
-            tokio::task::spawn_blocking(move || {
-                let action = match crate::wt_status::set(&file, &path, status) {
-                    Ok(all) => Action::WtStatuses(all),
-                    Err(e) => Action::Notice(format!("não gravei o status: {e:#}")),
-                };
-                let _ = results.send(action);
-            });
-        }
         Effect::Permission(p, allow) => {
             let state_dir = state.paths.state_dir.clone();
             tokio::task::spawn_blocking(move || {
@@ -269,59 +245,11 @@ fn run_effect(state: &AppState, effect: Effect, results: mpsc::UnboundedSender<A
                 let _ = results.send(Action::Notice(msg));
             });
         }
-        Effect::SpeedTest => {
-            let cfg = state.config.network.clone();
-            tokio::spawn(async move {
-                crate::providers::speedtest::run(cfg, |ev| {
-                    let _ = results.send(Action::Speed(ev));
-                })
-                .await;
-            });
-        }
         Effect::OpenUrl(url) => {
             tokio::task::spawn_blocking(move || {
                 let msg = match crate::platform::open_url(&url) {
                     Ok(()) => format!("abrindo {url}"),
                     Err(e) => format!("não consegui abrir o navegador: {e:#}"),
-                };
-                let _ = results.send(Action::Notice(msg));
-            });
-        }
-        Effect::OpenTab { launcher, dir, cmd, title } => {
-            tokio::task::spawn_blocking(move || {
-                let msg = match crate::terminal::open(&launcher, &dir, &cmd, &title) {
-                    Ok(()) => format!("{cmd} aberto numa aba nova ({})", launcher.name()),
-                    Err(e) => format!("não consegui abrir a aba: {e:#}"),
-                };
-                let _ = results.send(Action::Notice(msg));
-            });
-        }
-        Effect::RemoveWorktree(r) => {
-            tokio::spawn(async move {
-                let path = r.path.display().to_string();
-                let args: Vec<&str> = if r.prunable {
-                    vec!["worktree", "prune"]
-                } else if r.dirty > 0 {
-                    vec!["worktree", "remove", "--force", &path]
-                } else {
-                    vec!["worktree", "remove", &path]
-                };
-                let out = tokio::process::Command::new("git").arg("-C").arg(&r.repo).args(&args).output().await;
-                let msg = match out {
-                    Ok(o) if o.status.success() => format!("worktree {} excluída", r.name),
-                    Ok(o) => format!("git worktree falhou: {}", String::from_utf8_lossy(&o.stderr).trim()),
-                    Err(e) => format!("git não executou: {e}"),
-                };
-                tracing::info!("{msg}");
-                let _ = results.send(Action::Notice(msg));
-            });
-        }
-        Effect::Docker { cmds, label } => {
-            let _ = results.send(Action::Notice(format!("{label}…")));
-            tokio::spawn(async move {
-                let msg = match crate::providers::docker::run(&cmds).await {
-                    Ok(()) => format!("{label}: feito"),
-                    Err(e) => format!("{label} falhou: {e:#}"),
                 };
                 let _ = results.send(Action::Notice(msg));
             });

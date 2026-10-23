@@ -37,8 +37,6 @@ tz = "America/New_York"
 refresh_minutes = 60
 
 [system]
-ping_target = "1.1.1.1:443"   # host:porta; mede o tempo de conexão TCP
-ping_interval_secs = 5
 disks = []                    # vazio = automático; ex.: ["/", "/mnt/c"]
 top_n = 5                     # processos em cada lista de ofensores
 
@@ -58,12 +56,11 @@ disk_crit = 97.0
 hysteresis = 3.0        # quanto precisa cair abaixo do limiar para o alerta baixar
 
 [worktrees]
-# Pastas varridas atrás de repositórios git; as worktrees vêm de `git worktree list`.
+# Pastas varridas atrás de repositórios git: são as opções do `n` (chat novo).
 workspaces = ["~"]
 depth = 2                     # até quantos níveis abaixo de cada pasta procurar
 only_with_worktrees = false   # true = esconde repositórios sem worktrees extras
-sizes = true                  # tamanho em disco (calculado em segundo plano a cada 10 min)
-refresh_secs = 30             # git status de cada worktree
+refresh_secs = 60             # relê a lista (criar ou remover worktree relê na hora)
 
 [claude]
 # dir = "~/.claude"           # padrão: $CLAUDE_CONFIG_DIR ou ~/.claude
@@ -94,22 +91,21 @@ soon_minutes = 15               # aviso amarelo quando faltam até 15 min
 snooze_minutes = 5              # quanto o `z` adia o alerta
 show_declined = false
 
-[terminal]
-# Como abrir a aba nova do `C` (worktrees) e do `r` (conversas). Vazio = automático:
-# tmux → Windows Terminal (WSL) → kitty → WezTerm → gnome-terminal.
-# {dir}, {cmd} e {title} são substituídos já com aspas; roda com `sh -c`.
-# new_tab = "alacritty --working-directory {dir} -e zsh -lic {cmd}"
-new_tab = ""
-
-[network]
-wsl_host = true         # no WSL: Wi-Fi e tráfego reais do Windows
-speedtest_down_mb = 25  # tamanho do teste de velocidade (tecla `s` no painel Sistema)
-speedtest_up_mb = 10
-
 [weather]
 enabled = true          # clima da cidade atual (open-meteo.com, sem chave)
 refresh_minutes = 15
 hours = 5               # horas da previsão mostradas
+
+[voice]
+# Ditado: `v` (ou Alt+V digitando no chat) grava; de novo, transcreve e escreve no chat,
+# sem Enter. Esc descarta. Tudo local: o áudio não sai da máquina.
+# record = ["pw-record", "--rate", "16000", "--channels", "1", "{wav}"]   # vazio = automático
+# Transcritor: `{wav}` é a gravação (WAV 16 kHz mono) e `{audio_ctx}` o contexto do
+# whisper do tamanho dela (frase curta transcreve em metade do tempo). Imprime o texto.
+transcribe = ["whisper-cli", "-m", "~/.local/share/whisper.cpp/models/ggml-small.bin",
+              "-l", "pt", "-t", "8", "-bs", "1", "-bo", "1", "-ac", "{audio_ctx}", "-sns", "-nt", "-np", "-f", "{wav}"]
+# -t: threads (até o nº de núcleos; sem a chave, o padrão já usa até 8)
+max_seconds = 120       # a gravação para sozinha depois disso
 
 [layout]
 wide_min_cols = 110     # a partir daqui, duas colunas

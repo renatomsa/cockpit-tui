@@ -1,5 +1,6 @@
 mod alert;
 mod app;
+mod chat;
 mod claude_hook;
 mod config;
 mod danger;
@@ -9,10 +10,9 @@ mod platform;
 mod providers;
 mod shell;
 mod solar;
-mod terminal;
 mod theme;
 mod ui;
-mod wt_status;
+mod voice;
 
 use std::{fs, path::PathBuf};
 
@@ -25,7 +25,7 @@ use crate::{
     theme::ThemeRegistry,
 };
 
-/// Cockpit de terminal: relógio, agenda, sistema, worktrees e sessões do Claude.
+/// Cockpit de terminal: chats do Claude Code, relógio, agenda e sistema.
 #[derive(Parser)]
 #[command(name = "cockpit", version, about)]
 struct Cli {
@@ -39,7 +39,8 @@ struct Cli {
     /// para ver o alerta sem conectar nada.
     #[arg(long)]
     demo_agenda: bool,
-    /// Arquivo onde gravar a pasta escolhida ao sair (usado pela função do `shell-init`).
+    /// Ignorado. Aceito só para a função antiga do `shell-init`, que ainda pode estar
+    /// carregada em terminais abertos, não quebrar o `cockpit`.
     #[arg(long, hide = true)]
     cd_file: Option<PathBuf>,
     #[command(subcommand)]
@@ -70,24 +71,6 @@ enum Cmd {
     Auth {
         #[command(subcommand)]
         cmd: AuthCmd,
-    },
-    /// Função de shell que faz o Enter trocar de pasta. Ponha no ~/.zshrc:
-    /// eval "$(cockpit shell-init zsh)"
-    ShellInit {
-        /// zsh, bash ou fish
-        shell: String,
-    },
-    /// Status da worktree em que você está (shape, wip, revisão manual, deploy, finalizado).
-    /// Sem status, abre um seletor; o cockpit aberto mostra na coluna de status.
-    Status {
-        /// shape, wip, revisao, deploy, finalizado (ou 1 a 5); nenhum limpa.
-        estado: Option<String>,
-        /// Pasta da worktree (padrão: a atual).
-        #[arg(long)]
-        dir: Option<PathBuf>,
-        /// Lista as worktrees com status.
-        #[arg(long, short)]
-        list: bool,
     },
     /// Arquivo de configuração.
     Config {
@@ -167,7 +150,6 @@ fn main() -> Result<()> {
             println!("config  {}", cli.config.unwrap_or_else(|| paths.config_file()).display());
             println!("temas   {}", paths.themes_dir().display());
             println!("estado  {}", paths.state_file().display());
-            println!("status  {}", paths.wt_status_file().display());
             println!("log     {}", paths.state_dir.join("cockpit.log").display());
             Ok(())
         }
@@ -208,19 +190,13 @@ fn main() -> Result<()> {
             }
         }
         Some(Cmd::Calendar { cmd }) => calendar_cmd(cmd, cli.config, &paths),
-        Some(Cmd::Status { estado, dir, list }) => wt_status::cli(estado, dir, list, &paths),
-        Some(Cmd::ShellInit { shell }) => {
-            print!("{}", shell::init_script(&shell)?);
-            Ok(())
-        }
-        None => run(cli.config, cli.theme, cli.cd_file, cli.demo_agenda, paths),
+        None => run(cli.config, cli.theme, cli.demo_agenda, paths),
     }
 }
 
 fn run(
     config_path: Option<PathBuf>,
     theme_arg: Option<String>,
-    cd_file: Option<PathBuf>,
     demo_agenda: bool,
     paths: Paths,
 ) -> Result<()> {
@@ -254,23 +230,16 @@ fn run(
     let mut state = AppState::new(loaded.config, paths, themes, theme_idx, notices);
     state.config_path = config_path;
     state.truecolor = truecolor;
-    state.has_cd_file = cd_file.is_some();
     state.demo_agenda = demo_agenda;
-    state.launcher = terminal::detect(&state.config.terminal.new_tab);
-    state.wt_status = wt_status::load(&state.paths.wt_status_file());
-    tracing::info!(launcher = ?state.launcher, "aba nova");
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .thread_name("cockpit")
         .build()?;
-    let exit = rt.block_on(app::run(state))?;
+    rt.block_on(app::run(state))?;
     // Sem esperar tarefas pendentes (git, du): o usuário quer o prompt de volta já.
     rt.shutdown_background();
-    if let (Some(file), Some(target)) = (cd_file, exit) {
-        shell::write_cd_file(&file, &target)?;
-    }
     Ok(())
 }
 

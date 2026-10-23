@@ -2,16 +2,12 @@
 
 mod agenda;
 mod bigclock;
-mod desktop;
-mod docker;
+mod chat;
 pub(crate) mod hero;
 pub mod layout;
 mod legend;
-pub(crate) mod sessions;
 mod system;
 mod sysboxes;
-mod workspace;
-mod worktrees;
 
 use ratatui::{
     Frame,
@@ -33,14 +29,11 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if let Some(r) = a.system {
         system::draw(f, r, s);
     }
-    if let Some(r) = a.docker {
-        docker::draw(f, r, s);
-    }
-    if let Some(r) = a.worktrees {
-        workspace::draw(f, r, s);
-    }
     if let Some(r) = a.agenda {
         agenda::draw(f, r, s);
+    }
+    if let Some(r) = a.chat {
+        chat::draw(f, r, s);
     }
 
     statusbar(f, a.status, s);
@@ -50,53 +43,57 @@ pub fn draw(f: &mut Frame, s: &AppState) {
     if s.show_legend {
         legend::draw(f, area, s);
     }
-    if let Some(p) = &s.status_pick {
-        status_dialog(f, area, s, p);
+    if let Some(p) = &s.chat_pick {
+        chat_pick_dialog(f, area, s, p);
     }
     if let Some(c) = &s.confirm {
         confirm_dialog(f, area, s, c);
     }
 }
 
-/// Seletor de status da worktree (tecla `s`).
-fn status_dialog(f: &mut Frame, area: Rect, s: &AppState, p: &crate::app::state::StatusPick) {
-    use crate::wt_status::CHOICES;
+/// Seletor de pasta do chat novo (tecla `n`).
+fn chat_pick_dialog(f: &mut Frame, area: Rect, s: &AppState, p: &crate::app::state::ChatPick) {
     let t = s.theme();
-    let current = s.wt_status.get(&p.path).copied();
-    let mut lines: Vec<Line> = CHOICES
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let selected = i == p.sel;
-            let (num, label, style) = match c {
-                Some(st) => (format!("{}", i + 1), st.label(), worktrees::status_style(t, *st)),
-                None => ("0".into(), "sem status", Style::new().fg(t.muted)),
-            };
-            let mut spans = vec![
-                Span::styled(if selected { "▸ " } else { "  " }, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{num}  "), Style::new().fg(t.muted)),
-                Span::styled(label, style),
-            ];
-            if *c == current {
-                spans.push(Span::styled("  (atual)", Style::new().fg(t.muted)));
-            }
-            let line = Line::from(spans);
-            if selected { line.style(Style::new().bg(t.border)) } else { line }
-        })
-        .collect();
+    let dirs = s.chat_dirs(&p.query);
+    let label_w = dirs.iter().map(|d| d.label.chars().count()).max().unwrap_or(1).min(40);
+    // Cabe na tela: rola para manter a pasta escolhida à vista.
+    let max_rows = (area.height as usize).saturating_sub(10).max(3);
+    let first = p.sel.saturating_sub(max_rows - 1);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("pasta: ", Style::new().fg(t.muted)),
+            Span::styled(p.query.clone(), Style::new().fg(t.fg).add_modifier(Modifier::BOLD)),
+            Span::styled("▏", Style::new().fg(t.accent)),
+        ]),
+        Line::raw(""),
+    ];
+    if dirs.is_empty() {
+        lines.push(Line::styled("nenhuma pasta com esse nome", Style::new().fg(t.muted)));
+    }
+    for (i, d) in dirs.iter().enumerate().skip(first).take(max_rows) {
+        let selected = i == p.sel;
+        let line = Line::from(vec![
+            Span::styled(if selected { "▸ " } else { "  " }, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<label_w$}", truncate(&d.label, label_w)), Style::new().fg(t.fg).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {}", d.branch.as_deref().unwrap_or("")), Style::new().fg(t.highlight)),
+            Span::styled(format!("  {}", crate::config::tilde(&d.path)), Style::new().fg(t.muted)),
+        ]);
+        lines.push(if selected { line.style(Style::new().bg(t.border)) } else { line });
+    }
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
+        Span::styled("digite", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(" filtra · ", Style::new().fg(t.muted)),
+        Span::styled("↑↓", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(" escolhe · ", Style::new().fg(t.muted)),
         Span::styled("Enter", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-        Span::styled(" grava · ", Style::new().fg(t.muted)),
-        Span::styled("1-5", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-        Span::styled(" direto · ", Style::new().fg(t.muted)),
-        Span::styled("0", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-        Span::styled(" limpa · ", Style::new().fg(t.muted)),
+        Span::styled(" abre o chat · ", Style::new().fg(t.muted)),
         Span::styled("Esc", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
         Span::styled(" cancela", Style::new().fg(t.muted)),
     ]));
-    let title = format!(" status · {} ", truncate(&p.name, 40));
-    let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(20).max(title.chars().count());
+    let title = " chat novo em… ";
+    // Caminhos longos não alargam o diálogo além de 100 colunas: o fim é cortado.
+    let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(20).clamp(50, 96);
     let w = (content_w as u16 + 4).min(area.width);
     let h = (lines.len() as u16 + 2).min(area.height);
     let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
@@ -112,45 +109,6 @@ fn status_dialog(f: &mut Frame, area: Rect, s: &AppState, p: &crate::app::state:
         ),
         r,
     );
-}
-
-/// Textos dos dois avisos de exclusão de worktree.
-fn remove_worktree_lines(s: &AppState, r: &crate::app::state::RemoveWt) -> (String, Vec<Line<'static>>) {
-    let t = s.theme();
-    let fg = Style::new().fg(t.fg);
-    let muted = Style::new().fg(t.muted);
-    let bold = Style::new().fg(t.alert).add_modifier(Modifier::BOLD);
-    let path = crate::config::tilde(&r.path);
-    let branch = r.branch.clone().unwrap_or_else(|| "(HEAD solta)".into());
-    if r.step == 1 {
-        let mut lines = vec![
-            Line::from(vec![Span::styled("Excluir a worktree ", fg), Span::styled(r.name.clone(), bold), Span::styled("?", fg)]),
-            Line::styled(format!("pasta   {path}"), muted),
-            Line::styled(format!("branch  {branch}  (continua existindo)"), muted),
-        ];
-        if r.prunable {
-            lines.push(Line::styled("a pasta já sumiu do disco: só limpa a lista (git worktree prune)", muted));
-        }
-        return (" excluir worktree ".into(), lines);
-    }
-    let mut lines = vec![Line::from(vec![Span::styled("A pasta ", fg), Span::styled(path.clone(), bold), Span::styled(" será apagada do disco.", fg)])];
-    if r.dirty > 0 {
-        lines.push(Line::styled(
-            format!("{} arquivo{} alterado{} ou novo{}, sem commit, será{} PERDIDO{}.", r.dirty, pl(r.dirty), pl(r.dirty), pl(r.dirty), if r.dirty == 1 { "" } else { "ão" }, if r.dirty == 1 { "" } else { "S" }),
-            bold,
-        ));
-    } else {
-        lines.push(Line::styled("Não há alterações pendentes: tudo já está em commits.", fg));
-    }
-    if r.sessions > 0 {
-        lines.push(Line::styled(
-            format!("{} conversa{} do Claude aberta{} nela vai{} ficar sem pasta.", r.sessions, pl(r.sessions as u32), pl(r.sessions as u32), if r.sessions == 1 { "" } else { "ão" }),
-            Style::new().fg(t.warn).add_modifier(Modifier::BOLD),
-        ));
-    }
-    lines.push(Line::styled(format!("A branch {branch} não é apagada (git branch -D {branch} remove)."), muted));
-    lines.push(Line::styled("Não dá para desfazer.", bold));
-    (" ⚠ exclusão definitiva ".into(), lines)
 }
 
 fn pl(n: u32) -> &'static str {
@@ -169,24 +127,30 @@ fn confirm_dialog(f: &mut Frame, area: Rect, s: &AppState, c: &crate::app::state
                 Span::styled(format!(" (pid {}) com SIGTERM?", k.pid), Style::new().fg(t.fg)),
             ])],
         ),
-        Confirm::Docker { title, lines, .. } => (
-            format!(" {title} "),
-            lines.iter().map(|l| Line::styled(l.clone(), Style::new().fg(t.fg))).collect(),
+        Confirm::CloseChat { title, .. } => (
+            " fechar chat ".to_string(),
+            vec![Line::from(vec![
+                Span::styled("Fechar o chat ", Style::new().fg(t.fg)),
+                Span::styled(title.clone(), Style::new().fg(t.alert).add_modifier(Modifier::BOLD)),
+                Span::styled("? O claude dele é encerrado (dá para retomar pela aba Claude Code).", Style::new().fg(t.fg)),
+            ])],
         ),
-        Confirm::RemoveWorktree(r) => remove_worktree_lines(s, r),
+        Confirm::Quit { chats } => (
+            " sair do cockpit ".to_string(),
+            vec![Line::styled(
+                format!("{chats} chat{} aberto{} será encerrado{}. Dá para retomar pela aba Claude Code.", pl(*chats as u32), pl(*chats as u32), pl(*chats as u32)),
+                Style::new().fg(t.fg),
+            )],
+        ),
     };
-    let (key, rest) = match c {
-        Confirm::RemoveWorktree(r) if r.step == 1 => ("y", " continua · qualquer outra tecla cancela"),
-        Confirm::RemoveWorktree(_) => ("Enter", " exclui de vez · qualquer outra tecla cancela"),
-        _ => ("y", " confirma · qualquer outra tecla cancela"),
-    };
+    let (key, rest) = ("y", " confirma · qualquer outra tecla cancela");
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
         Span::styled(key, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
         Span::styled(rest, Style::new().fg(t.muted)),
     ]));
     // Pergunta curta fica centralizada; avisos com detalhes, alinhados à esquerda.
-    let align = if matches!(c, Confirm::Kill(_)) { Alignment::Center } else { Alignment::Left };
+    let align = if matches!(c, Confirm::Kill(_) | Confirm::Quit { .. }) { Alignment::Center } else { Alignment::Left };
     let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(20).max(title.chars().count());
     let w = (content_w as u16 + 4).min(area.width);
     let h = (lines.len() as u16 + 2).min(area.height);
@@ -234,6 +198,11 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
         (None, None) => lbl_owned("geo …".into(), t.muted),
     };
     let mut right = Vec::new();
+    // Ditado aparece aqui também: no modo compacto o chat some.
+    if let Some(label) = voice_label(s) {
+        right.push(Span::styled(label, Style::new().fg(t.alert).add_modifier(Modifier::BOLD)));
+        right.push(lbl("  ·  "));
+    }
     let waiting = s.waiting_count();
     if waiting > 0 {
         right.push(Span::styled(format!("◆ {waiting} esperando você"), Style::new().fg(t.warn).add_modifier(Modifier::BOLD)));
@@ -266,27 +235,13 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
             lbl(" dispensar"),
         ]),
         None => {
-            let hints: &[(&'static str, &'static str)] = match s.active_panel() {
-                _ if s.status_pick.is_some() => &[("↑↓", " escolher  "), ("Enter", " gravar  "), ("1-5", " direto  "), ("0", " limpar  "), ("Esc", " cancelar")],
-                _ if s.filter_editing => &[("digite", " para filtrar  "), ("↑↓", " escolher  "), ("Enter", " aplicar  "), ("Esc", " limpar")],
-                Panel::System => &[("s", " velocidade  "), ("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
-                Panel::Worktrees => &[
-                    ("←→", " aba  "),
-                    ("↑↓", " escolher  "),
-                    ("Enter", " ir para a pasta  "),
-                    ("C", " claude numa aba nova  "),
-                    ("s", " status  "),
-                    ("D", " excluir  "),
-                    ("/", " filtrar  "),
-                    ("i", " legenda  "),
-                    ("Tab", " foco  "),
-                    ("q", " sair"),
-                ],
+            let hints: &[(&'static str, &'static str)] = match s.focus {
+                _ if s.chat_pick.is_some() => &[("digite", " filtra  "), ("↑↓", " escolhe  "), ("Enter", " abre o chat  "), ("Esc", " cancela")],
+                Panel::System => &[("←→", " coluna  "), ("↑↓", " processo  "), ("K", " encerrar  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
+                Panel::Chat if s.chat_typing => &[("Ctrl+Q", " volta ao cockpit  "), ("Alt+V", " ditar  "), ("Alt+1-9", " troca de chat  "), ("Shift+PgUp/PgDn", " rola o histórico")],
+                Panel::Chat => &[("Enter", " digitar  "), ("v", " ditar  "), ("n", " chat novo  "), ("←→", " troca  "), ("x", " fecha  "), ("Tab", " foco  "), ("q", " sair")],
                 Panel::Agenda => &[("↑↓", " escolher  "), ("o", " abrir a chamada  "), ("y", " copiar link  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
-                Panel::Docker => &[("↑↓", " escolher  "), ("K", " parar container  "), ("X", " derrubar tudo  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
-                Panel::Sessions if s.wt_tab == crate::app::state::WtTab::Desktop => &[("←→", " aba  "), ("↑↓", " escolher  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
-                Panel::Sessions => &[("←→", " aba  "), ("↑↓", " escolher  "), ("a", " permitir  "), ("Enter", " ir para a pasta  "), ("r", " retomar numa aba nova  "), ("i", " legenda  "), ("Tab", " foco  "), ("q", " sair")],
-                _ => &[("Tab", " foco  "), ("t", " tema  "), ("i", " legenda  "), ("?", " ajuda  "), ("q", " sair")],
+                _ => &[("Tab", " foco  "), ("t", " tema  "), ("v", " ditar  "), ("i", " legenda  "), ("?", " ajuda  "), ("q", " sair")],
             };
             let mut spans = vec![Span::raw(" ")];
             for (k, l) in hints {
@@ -302,6 +257,20 @@ fn statusbar(f: &mut Frame, area: Rect, s: &AppState) {
     f.render_widget(Paragraph::new(right).alignment(Alignment::Right), r);
 }
 
+/// "● gravando 0:07 · v para · Esc descarta" ou "… transcrevendo"; nada parado.
+pub(crate) fn voice_label(s: &AppState) -> Option<String> {
+    use crate::app::state::VoiceState;
+    let stop = if s.focus == Panel::Chat && s.chat_typing { "Alt+V" } else { "v" };
+    match s.voice {
+        VoiceState::Idle => None,
+        VoiceState::Recording { since } => {
+            let secs = (s.now - since).num_seconds().max(0);
+            Some(format!("● gravando {}:{:02} · {stop} para · Esc descarta", secs / 60, secs % 60))
+        }
+        VoiceState::Transcribing => Some("… transcrevendo · Esc descarta".into()),
+    }
+}
+
 fn lbl_owned(text: String, color: ratatui::style::Color) -> Span<'static> {
     Span::styled(text, Style::new().fg(color))
 }
@@ -311,22 +280,16 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
     let rows = [
         ("Tab / Shift+Tab", "alterna o painel em foco"),
         ("t / T", "próximo / anterior tema (fica lembrado)"),
-        ("Enter (Worktrees)", "sai e vai para a worktree (com o shell-init)"),
-        ("C (Worktrees)", "abre `claude --continue` numa aba nova, na worktree"),
-        ("s (Worktrees)", "status: shape, wip, revisão manual, deploy, finalizado"),
-        ("/ (Worktrees)", "filtra por nome, branch ou status; Esc limpa"),
-        ("D (Worktrees)", "exclui a worktree selecionada (dois avisos antes)"),
-        ("← → (Worktrees)", "troca entre as abas Worktrees e Claude"),
-        ("Enter (Claude)", "sai e vai para a pasta da conversa"),
-        ("r (Claude)", "retoma uma conversa encerrada numa aba nova"),
+        ("v / Alt+V", "ditado: grava / para e escreve no chat"),
+        ("n / Enter (Chat)", "abre um chat do Claude Code (escolhendo a pasta) / digita nele"),
+        ("Ctrl+Q (Chat)", "para de digitar e devolve as teclas ao cockpit"),
+        ("← → · x (Chat)", "troca de chat · fecha o chat (encerra o claude dele)"),
+        ("Shift+PgUp/PgDn", "rola o histórico do chat (digitando)"),
         ("o / y (Agenda)", "abre a chamada da reunião / copia o link"),
         ("z (alerta)", "adia o alerta vermelho de reunião; qualquer outra tecla o para"),
-        ("K (Docker)", "para o container selecionado (docker stop)"),
-        ("X (Docker)", "derruba tudo: compose down --remove-orphans por projeto"),
         ("a", "permite desta vez o pedido de permissão do Claude Code (com o hook instalado)"),
         ("i", "legenda dos símbolos do painel em foco"),
         ("←→ ↑↓ (Sistema)", "escolhe coluna e processo"),
-        ("s (Sistema)", "mede a velocidade da internet (download e upload)"),
         ("K (Sistema)", "encerra o processo com SIGTERM (pede confirmação)"),
         ("x", "dispensa o aviso da barra"),
         ("?", "abre/fecha esta ajuda"),
@@ -355,19 +318,6 @@ fn help(f: &mut Frame, area: Rect, s: &AppState) {
         ),
         r,
     );
-}
-
-/// Tempo relativo curto: 45s, 12m, 3h, 5d, 2mo, 1a.
-pub(crate) fn ago(secs: i64) -> String {
-    let s = secs.max(0);
-    match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86_400 => format!("{}h", s / 3600),
-        86_400..2_592_000 => format!("{}d", s / 86_400),
-        2_592_000..31_536_000 => format!("{}mo", s / 2_592_000),
-        _ => format!("{}a", s / 31_536_000),
-    }
 }
 
 /// Completa com espaços até `w` colunas (contando caracteres, não bytes).
@@ -443,28 +393,7 @@ mod tests {
         let out = render(200, 50, &state());
         assert!(out.contains('█'));
         assert!(out.contains("UTC-03:00"));
-        assert!(out.contains("Sistema") && out.contains("Worktrees") && out.contains("Claude"));
-    }
-
-    #[test]
-    fn status_column_and_picker() {
-        use crate::{
-            app::state::StatusPick,
-            providers::git::{Repo, Worktree, WorktreesSnapshot},
-            wt_status::WtStatus,
-        };
-        let mut s = state();
-        let wt = |name: &str, path: &str| Worktree { name: name.into(), path: path.into(), branch: Some("main".into()), ..Default::default() };
-        s.worktrees = Snapshot::ok(WorktreesSnapshot {
-            repos: vec![Repo { name: "v360".into(), path: "/h/v360".into(), worktrees: vec![wt("build-s4", "/h/a"), wt("cfs", "/h/b")] }],
-        });
-        assert!(!render(200, 50, &s).contains("revisão"), "sem status, sem coluna");
-        s.wt_status.insert("/h/a".into(), WtStatus::RevisaoManual);
-        let out = render(200, 50, &s);
-        assert!(out.lines().any(|l| l.contains("build-s4") && l.contains("revisão")), "{out}");
-        s.status_pick = Some(StatusPick { path: "/h/a".into(), name: "build-s4".into(), sel: 2 });
-        let out = render(200, 50, &s);
-        assert!(out.contains("status · build-s4") && out.contains("revisão manual  (atual)"), "{out}");
+        assert!(out.contains("Sistema") && out.contains("Chat") && out.contains("Agenda"));
     }
 
     #[test]
@@ -482,15 +411,12 @@ mod tests {
         let row = |needle: &str| out.lines().position(|l| l.contains(needle)).unwrap_or_else(|| panic!("sem {needle}:\n{out}"));
         assert!(row("TOP CPU") < row("LIMITES DO CLAUDE"), "{out}");
         assert!(row("LIMITES DO CLAUDE") < row("Sessão 5h") && row("Sessão 5h") < row("Semana"));
-        // a aba Claude Code não repete o bloco
-        s.wt_tab = crate::app::state::WtTab::Claude;
-        assert_eq!(render(200, 50, &s).matches("Sessão 5h").count(), 1);
     }
 
     #[test]
     fn compact_mode_shows_only_hero() {
         let out = render(120, 24, &state());
-        assert!(!out.contains("Worktrees"));
+        assert!(!out.contains("Chat"));
         assert!(out.contains("Rio de Janeiro"));
     }
 }

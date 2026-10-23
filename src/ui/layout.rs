@@ -17,11 +17,14 @@ pub struct Areas {
     pub mode: Mode,
     pub hero: Rect,
     pub agenda: Option<Rect>,
-    pub docker: Option<Rect>,
-    pub worktrees: Option<Rect>,
+    pub chat: Option<Rect>,
     pub system: Option<Rect>,
     pub status: Rect,
 }
+
+/// Altura que o painel Sistema precisa: caixas de CPU e memória, TOP CPU/MEM e limites
+/// do Claude.
+const SYSTEM_H: u16 = 27;
 
 pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
     let [main, status] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
@@ -31,58 +34,33 @@ pub fn compute(area: Rect, cfg: &LayoutConfig) -> Areas {
             mode: Mode::Compact,
             hero: main,
             agenda: None,
-            docker: None,
-            worktrees: None,
+            chat: None,
             system: None,
             status,
         };
     }
 
-    // 18 linhas: relógio grande + reunião + clima; em telas baixas, o clima some antes.
-    let hero_h = if main.height >= 45 { 18 } else { 12 };
-
     if area.width >= cfg.wide_min_cols {
         let left_pct = cfg.left_percent.clamp(30, 80);
         let [left, right] =
             Layout::horizontal([Constraint::Percentage(left_pct), Constraint::Percentage(100 - left_pct)]).areas(main);
-        // Agenda e Docker com a mesma altura; o resto fica com as worktrees.
-        let [hero, agenda, docker, worktrees] = Layout::vertical([
-            Constraint::Length(hero_h),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Min(5),
-        ])
-        .areas(left);
-        // Worktrees e Claude viraram abas do mesmo painel: o Sistema fica com a coluna toda.
-        let system = right;
-        return Areas {
-            mode: Mode::Wide,
-            hero,
-            agenda: Some(agenda),
-            docker: Some(docker),
-            worktrees: Some(worktrees),
-            system: Some(system),
-            status,
-        };
+        // À esquerda, o chat com quase tudo e a agenda embaixo; à direita, o relógio em
+        // cima e o sistema embaixo. O relógio grande (18 linhas, com clima) só quando sobra
+        // altura para o sistema inteiro.
+        let hero_h = if right.height >= 18 + SYSTEM_H { 18 } else { 12 };
+        let [chat, agenda] = Layout::vertical([Constraint::Min(8), Constraint::Length(7)]).areas(left);
+        let [hero, system] = Layout::vertical([Constraint::Length(hero_h), Constraint::Min(5)]).areas(right);
+        return Areas { mode: Mode::Wide, hero, agenda: Some(agenda), chat: Some(chat), system: Some(system), status };
     }
 
-    let [hero, agenda, system, docker, worktrees] = Layout::vertical([
-        Constraint::Length(12),
-        Constraint::Length(5),
-        Constraint::Length(14),
-        Constraint::Length(5),
+    let [chat, agenda, hero, system] = Layout::vertical([
         Constraint::Fill(1),
+        Constraint::Length(5),
+        Constraint::Length(12),
+        Constraint::Length(14),
     ])
     .areas(main);
-    Areas {
-        mode: Mode::Stacked,
-        hero,
-        agenda: Some(agenda),
-        docker: Some(docker),
-        worktrees: Some(worktrees),
-        system: Some(system),
-        status,
-    }
+    Areas { mode: Mode::Stacked, hero, agenda: Some(agenda), chat: Some(chat), system: Some(system), status }
 }
 
 #[cfg(test)]
@@ -101,8 +79,13 @@ mod tests {
     fn wide_split_and_status_line() {
         let a = compute(Rect::new(0, 0, 200, 50), &LayoutConfig::default());
         assert_eq!(a.status, Rect::new(0, 49, 200, 1));
-        assert_eq!(a.hero.width, 124);
-        assert_eq!(a.hero.height, 18);
-        assert_eq!(a.system.unwrap().x, 124);
+        // chat no alto à esquerda, agenda embaixo dele
+        let chat = a.chat.unwrap();
+        assert_eq!((chat.x, chat.y, chat.width, chat.height), (0, 0, 124, 42));
+        assert_eq!(a.agenda.unwrap().y, 42);
+        // relógio no alto à direita, sistema embaixo
+        assert_eq!((a.hero.x, a.hero.y, a.hero.height), (124, 0, 18));
+        assert_eq!(a.system.unwrap().y, 18);
+        assert_eq!(compute(Rect::new(0, 0, 200, 40), &LayoutConfig::default()).hero.height, 12);
     }
 }
