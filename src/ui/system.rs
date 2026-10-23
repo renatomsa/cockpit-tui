@@ -21,7 +21,7 @@ use crate::{
     theme::Theme,
 };
 
-/// Largura da coluna de rótulo ("REDE  ").
+/// Recuo do rodapé, alinhado às barras.
 const LABEL_W: usize = 7;
 
 pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
@@ -48,12 +48,8 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
         return;
     }
 
-    // Caixas de CPU e Memória no topo, a de Disco logo abaixo; o resto fica embaixo delas.
-    let mut boxes_h = super::sysboxes::draw(f, inner, s, d);
-    let rest = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
-    boxes_h += super::sysboxes::draw_disk(f, rest, s, d);
-    let rest = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
-    boxes_h += super::sysboxes::draw_net(f, rest, s, d) + 1;
+    // Caixas de CPU e Memória no topo; o resto fica embaixo delas.
+    let boxes_h = super::sysboxes::draw(f, inner, s, d) + 1;
     let inner = Rect { y: inner.y + boxes_h, height: inner.height.saturating_sub(boxes_h), ..inner };
     if inner.height == 0 {
         return;
@@ -63,25 +59,18 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let h = inner.height as usize;
     let n = s.config.system.top_n;
     let has_procs = !d.top_cpu.is_empty() || !d.top_mem.is_empty();
-    // Especificações no rodapé: completas (cabeçalho + 5) com espaço, compactas (+ 3) se
-    // apertado, e nada abaixo disso.
-    let specs = spec_lines(s, w, h);
-    let specs_h = specs.len();
-    let h_rest = h - specs_h;
     // Limites do plano do Claude logo abaixo dos TOP, com uma linha de respiro; somem
     // antes dos processos quando falta altura.
+    let rows = metric_rows(s, d);
+    let metrics_n = rows.len();
     let limits = limit_lines(s, t, w);
-    let limits_h = if !limits.is_empty() && h_rest >= limits.len() + 1 + 10 { limits.len() } else { 0 };
-    let h_rest = h_rest - if limits_h > 0 { limits_h + 1 } else { 0 };
-    let top_rows = if has_procs && h_rest >= 10 { (n + 1).min(h_rest - 8) } else { 0 };
-    if specs_h > 0 {
-        let y = inner.y + (h - specs_h) as u16;
-        f.render_widget(Paragraph::new(specs), Rect { y, height: specs_h as u16, ..inner });
-    }
+    let limits_h = if !limits.is_empty() && h >= limits.len() + 1 + metrics_n + 3 { limits.len() } else { 0 };
+    let h_rest = h - if limits_h > 0 { limits_h + 1 } else { 0 };
+    // TOP com cabeçalho e ao menos um processo, abaixo das métricas e de uma linha de respiro.
+    let top_rows = if has_procs && h_rest >= metrics_n + 3 { (n + 1).min(h_rest - metrics_n - 1) } else { 0 };
     let h = h_rest;
     let inner = Rect { height: h as u16, ..inner };
 
-    let rows = metric_rows(s, d);
     let lines = fit_by_priority(rows, h - top_rows);
     let metrics_h = lines.len() as u16;
     f.render_widget(Paragraph::new(lines), Rect { height: metrics_h, ..inner });
@@ -161,61 +150,6 @@ fn limit_color(t: &Theme, l: &Limit) -> Color {
     }
 }
 
-/// Bloco "MÁQUINA": SO, processador, núcleos, placa de vídeo e memória. No WSL, os
-/// números são da máquina e, entre parênteses, quanto o WSL recebe.
-fn spec_lines(s: &AppState, w: usize, h: usize) -> Vec<Line<'static>> {
-    let Some(sp) = &s.specs.data else { return Vec::new() };
-    let t = s.theme();
-    let compact = h < 24;
-    if h < 16 {
-        return Vec::new();
-    }
-    let lbl = |x: &str| Span::styled(format!("{x:<9}"), Style::new().fg(t.accent).add_modifier(Modifier::BOLD));
-    let val = |x: String| Span::styled(x, Style::new().fg(t.fg));
-    let dim = |x: String| Span::styled(x, Style::new().fg(t.muted));
-
-    let so = match (&sp.host_os, sp.wsl) {
-        (Some(host), true) => format!("{} · WSL2 no {host}", sp.os),
-        (None, true) => format!("{} · WSL2", sp.os),
-        _ => sp.os.clone(),
-    };
-    let cores = match sp.cores {
-        Some(c) => format!("{c} físicos · {} threads", sp.threads),
-        None => format!("{} threads", sp.threads),
-    };
-    let cores_wsl = (sp.wsl && sp.visible_threads != sp.threads).then(|| format!("  (WSL usa {})", sp.visible_threads));
-    let gpu = if sp.gpus.is_empty() { "não identificada".to_string() } else { sp.gpus.join(" · ") };
-    let mem = bytes(sp.mem_total.unwrap_or(sp.visible_mem));
-    let mem_wsl = (sp.wsl && sp.mem_total.is_some()).then(|| format!("  (WSL usa {})", bytes(sp.visible_mem)));
-    let fit = |line: Line<'static>| -> Line<'static> {
-        // corta o último pedaço se não couber
-        let mut line = line;
-        while line.width() > w && line.spans.len() > 2 {
-            line.spans.pop();
-        }
-        line
-    };
-
-    let head = "MÁQUINA ";
-    let mut out = vec![Line::from(vec![
-        Span::styled(head, Style::new().fg(t.muted)),
-        Span::styled("─".repeat(w.saturating_sub(head.chars().count())), Style::new().fg(t.border)),
-    ])];
-    let so_line = Line::from(vec![lbl("SO"), val(truncate(&so, w.saturating_sub(9)))]);
-    if compact {
-        out.push(so_line);
-        out.push(fit(Line::from(vec![lbl("CPU"), val(truncate(&sp.cpu, w.saturating_sub(9))), dim(format!(" · {cores}"))])));
-        out.push(fit(Line::from(vec![lbl("GPU"), val(truncate(&gpu, w.saturating_sub(9))), dim(format!(" · RAM {mem}"))])));
-    } else {
-        out.push(so_line);
-        out.push(Line::from(vec![lbl("CPU"), val(truncate(&sp.cpu, w.saturating_sub(9)))]));
-        out.push(fit(Line::from(vec![lbl("NÚCLEOS"), val(cores)].into_iter().chain(cores_wsl.map(dim)).collect::<Vec<_>>())));
-        out.push(Line::from(vec![lbl("GPU"), val(truncate(&gpu, w.saturating_sub(9)))]));
-        out.push(fit(Line::from(vec![lbl("MEMÓRIA"), val(mem)].into_iter().chain(mem_wsl.map(dim)).collect::<Vec<_>>())));
-    }
-    out
-}
-
 /// Mantém as linhas de menor número de prioridade que cabem, na ordem original.
 fn fit_by_priority(rows: Vec<(u8, Line<'static>)>, budget: usize) -> Vec<Line<'static>> {
     let mut idx: Vec<usize> = (0..rows.len()).collect();
@@ -227,29 +161,11 @@ fn fit_by_priority(rows: Vec<(u8, Line<'static>)>, budget: usize) -> Vec<Line<'s
     rows.into_iter().zip(keep).filter(|(_, k)| *k).map(|((_, l), _)| l).collect()
 }
 
-/// Prioridade das linhas em branco entre grupos: são as primeiras a sumir quando falta altura.
-const SPACER: u8 = 9;
-
 fn metric_rows(s: &AppState, d: &SystemSnapshot) -> Vec<(u8, Line<'static>)> {
     let t = s.theme();
     // Grade fixa: rótulo | barra | % | detalhe. Todas as barras começam e terminam na mesma coluna.
     let indent = || Span::raw(" ".repeat(LABEL_W));
-    let dz = &d.danger;
     let mut rows: Vec<(u8, Line<'static>)> = Vec::new();
-    let spacer = || (SPACER, Line::raw(""));
-
-    if let Some(p) = d.psi {
-        rows.push((
-            3,
-            Line::from(vec![
-                label(t, "PSI", dz.psi),
-                muted(t, format!("cpu {:<6.1}", p.cpu)),
-                Span::styled(format!("mem {:<6.1}", p.mem), if dz.psi > Level::Ok { level_style(t, dz.psi) } else { Style::new().fg(t.fg) }),
-                muted(t, format!("io {:.1}", p.io)),
-            ]),
-        ));
-    }
-    rows.push(spacer());
 
     // ── Rodapé
     let mut info = format!("ligado há {}", uptime(d.uptime));
@@ -330,11 +246,6 @@ fn top_lines(s: &AppState, d: &SystemSnapshot, w: usize, n: usize) -> Vec<Line<'
     out
 }
 
-fn label(t: &Theme, name: &str, lvl: Level) -> Span<'static> {
-    let style = if lvl == Level::Ok { Style::new().fg(t.accent).add_modifier(Modifier::BOLD) } else { level_style(t, lvl) };
-    Span::styled(format!("{name:<LABEL_W$}"), style)
-}
-
 fn muted(t: &Theme, s: String) -> Span<'static> {
     Span::styled(s, Style::new().fg(t.muted))
 }
@@ -346,16 +257,6 @@ pub(crate) fn level_style(t: &Theme, lvl: Level) -> Style {
         Level::Ok => Style::new().fg(t.fg),
         Level::Warn => Style::new().fg(t.warn).add_modifier(Modifier::BOLD),
         Level::Critical => Style::new().fg(t.alert).add_modifier(Modifier::BOLD),
-    }
-}
-
-pub(crate) fn gauge_color(t: &Theme, pct: f64, lvl: Level) -> Color {
-    match lvl {
-        Level::Critical => t.alert,
-        Level::Warn => t.warn,
-        Level::Ok if pct < 60.0 => t.gauge_low,
-        Level::Ok if pct < 85.0 => t.gauge_mid,
-        Level::Ok => t.gauge_high,
     }
 }
 

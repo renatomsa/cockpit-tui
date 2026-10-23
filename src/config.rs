@@ -20,10 +20,9 @@ pub struct Config {
     pub system: SystemConfig,
     pub worktrees: WorktreesConfig,
     pub claude: ClaudeConfig,
-    pub terminal: TerminalConfig,
     pub calendar: CalendarConfig,
-    pub network: NetworkConfig,
     pub weather: WeatherConfig,
+    pub voice: VoiceConfig,
 }
 
 impl Default for Config {
@@ -37,10 +36,9 @@ impl Default for Config {
             system: SystemConfig::default(),
             worktrees: WorktreesConfig::default(),
             claude: ClaudeConfig::default(),
-            terminal: TerminalConfig::default(),
             calendar: CalendarConfig::default(),
-            network: NetworkConfig::default(),
             weather: WeatherConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -125,9 +123,6 @@ impl Default for LayoutConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SystemConfig {
-    /// Alvo do ping. Sem ICMP sem root, mede o tempo de conexão TCP (`host:porta`).
-    pub ping_target: String,
-    pub ping_interval_secs: u64,
     /// Pontos de montagem mostrados. Vazio = automático (`/`, `/home`, `/mnt/<letra>`, `/media/*`).
     pub disks: Vec<String>,
     /// Quantos processos em cada lista de maiores ofensores.
@@ -138,8 +133,6 @@ pub struct SystemConfig {
 impl Default for SystemConfig {
     fn default() -> Self {
         Self {
-            ping_target: "1.1.1.1:443".into(),
-            ping_interval_secs: 5,
             disks: Vec::new(),
             top_n: 5,
             danger: DangerConfig::default(),
@@ -195,14 +188,13 @@ pub struct WorktreesConfig {
     pub depth: usize,
     /// Só lista repositórios que têm worktrees além da principal.
     pub only_with_worktrees: bool,
-    /// Calcula o tamanho em disco de cada worktree (em segundo plano, a cada 10 min).
-    pub sizes: bool,
+    /// Relê a lista de worktrees a cada tantos segundos (criar ou remover uma relê na hora).
     pub refresh_secs: u64,
 }
 
 impl Default for WorktreesConfig {
     fn default() -> Self {
-        Self { workspaces: vec!["~".into()], depth: 2, only_with_worktrees: false, sizes: true, refresh_secs: 30 }
+        Self { workspaces: vec!["~".into()], depth: 2, only_with_worktrees: false, refresh_secs: 60 }
     }
 }
 
@@ -278,22 +270,6 @@ impl Default for CalendarConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct NetworkConfig {
-    /// No WSL, lê o Wi-Fi e o tráfego do Windows (um PowerShell fica aberto em segundo plano).
-    pub wsl_host: bool,
-    /// Tamanho do download e do upload do teste de velocidade (tecla `s`), em MB.
-    pub speedtest_down_mb: u64,
-    pub speedtest_up_mb: u64,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self { wsl_host: true, speedtest_down_mb: 25, speedtest_up_mb: 10 }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
 pub struct WeatherConfig {
     /// Clima da cidade atual (Open-Meteo, sem chave).
     pub enabled: bool,
@@ -308,13 +284,30 @@ impl Default for WeatherConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct TerminalConfig {
-    /// Como abrir uma aba nova (o `C` das worktrees e o `r` das conversas). Vazio =
-    /// automático: tmux, Windows Terminal (WSL), kitty, WezTerm ou gnome-terminal.
-    /// Rodado com `sh -c`; `{dir}`, `{cmd}` e `{title}` são substituídos já com aspas.
-    pub new_tab: String,
+pub struct VoiceConfig {
+    /// Gravador; `{wav}` vira o arquivo gravado. Vazio = o primeiro que existir entre
+    /// `pw-record`, `parecord`, `arecord` e `rec` (sox).
+    pub record: Vec<String>,
+    /// Transcritor: lê o `{wav}` e imprime o texto. Padrão: whisper.cpp local, com o
+    /// contexto do tamanho da gravação (`{audio_ctx}`) e busca gulosa, para responder rápido.
+    pub transcribe: Vec<String>,
+    /// A gravação para sozinha depois de tantos segundos.
+    pub max_seconds: i64,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        let s = |x: &str| x.to_string();
+        // O whisper usa 4 threads por padrão; até 8 ainda acelera.
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)).to_string();
+        Self {
+            record: Vec::new(),
+            transcribe: vec![s("whisper-cli"), s("-m"), s("~/.local/share/whisper.cpp/models/ggml-small.bin"), s("-l"), s("pt"), s("-t"), threads, s("-bs"), s("1"), s("-bo"), s("1"), s("-ac"), s("{audio_ctx}"), s("-sns"), s("-nt"), s("-np"), s("-f"), s("{wav}")],
+            max_seconds: 120,
+        }
+    }
 }
 
 /// Expande `~` e `~/…` para o home.
@@ -430,11 +423,6 @@ impl Paths {
 
     pub fn state_file(&self) -> PathBuf {
         self.state_dir.join("state.toml")
-    }
-
-    /// Status de cada worktree (shape, wip…), escolhido com `s` ou `cockpit status`.
-    pub fn wt_status_file(&self) -> PathBuf {
-        self.state_dir.join("worktree-status.toml")
     }
 }
 

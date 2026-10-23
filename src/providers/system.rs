@@ -28,7 +28,6 @@ pub struct SystemSnapshot {
     pub swap_used: u64,
     pub swap_total: u64,
     pub psi: Option<Psi>,
-    pub net: Option<NetRates>,
     pub disks: Vec<DiskInfo>,
     pub top_cpu: Vec<ProcGroup>,
     pub top_mem: Vec<ProcGroup>,
@@ -44,15 +43,6 @@ pub struct SystemSnapshot {
     /// Temperatura da CPU em °C, quando há sensor (no WSL não há).
     pub temp_c: Option<f64>,
     pub mem_parts: Option<MemParts>,
-    /// Leitura e escrita em disco agora (discos inteiros de /proc/diskstats).
-    pub disk_io: Option<DiskIo>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct DiskIo {
-    /// Bytes por segundo.
-    pub read: f64,
-    pub write: f64,
 }
 
 /// Percentuais do tempo de CPU por tipo (somam ~100).
@@ -105,14 +95,6 @@ pub struct Psi {
     pub io: f64,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct NetRates {
-    pub iface: String,
-    /// Bytes por segundo.
-    pub rx: f64,
-    pub tx: f64,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiskInfo {
     pub mount: String,
@@ -158,9 +140,7 @@ pub fn spawn(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
 fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
     let mut sys = System::new();
     let mut eval = Evaluator::new(cfg.danger.clone());
-    let mut net = NetCounter::default();
     let mut last_stat: Option<[u64; 8]> = None;
-    let mut last_io: Option<(Instant, u64, u64)> = None;
     let mut snap = SystemSnapshot::default();
     // Sem `without_tasks` o sysinfo lista cada thread como processo (libuv-worker ×16…).
     // O exe é lido uma vez por processo: dá nome melhor que o `comm` ("MainThread", 15 chars).
@@ -195,15 +175,6 @@ fn run(cfg: SystemConfig, tx: watch::Sender<Snapshot<SystemSnapshot>>) {
         }
         snap.threads = fs::read_to_string("/proc/loadavg").ok().and_then(|s| parse_loadavg_threads(&s));
         snap.mem_parts = fs::read_to_string("/proc/meminfo").ok().and_then(|s| parse_meminfo(&s));
-        if let Some((r, w)) = fs::read_to_string("/proc/diskstats").ok().map(|s| parse_diskstats(&s, is_whole_disk)) {
-            let now = Instant::now();
-            if let Some((t, pr, pw)) = last_io {
-                let dt = now.duration_since(t).as_secs_f64().max(0.001);
-                snap.disk_io = Some(DiskIo { read: r.saturating_sub(pr) as f64 / dt, write: w.saturating_sub(pw) as f64 / dt });
-            }
-            last_io = Some((now, r, w));
-        }
-        snap.net = net.sample();
 
         // Processos no mesmo ritmo da CPU global: o sysinfo calcula o % de cada processo
         // contra o intervalo da última leitura global, e ritmos diferentes inflam o valor.
@@ -342,27 +313,6 @@ fn cpu_parts(prev: &[u64; 8], now: &[u64; 8]) -> Option<CpuParts> {
     })
 }
 
-/// Disco inteiro (não partição, loop, ram ou device-mapper): só esses entram na soma
-/// de E/S, senão a mesma escrita contaria duas vezes.
-fn is_whole_disk(name: &str) -> bool {
-    ["sd", "nvme", "vd", "xvd", "mmcblk", "hd"].iter().any(|p| name.starts_with(p)) && Path::new("/sys/block").join(name).exists()
-}
-
-/// Bytes lidos e escritos desde o boot, somando os discos aceitos por `keep`.
-/// Campos: maj min nome lidas_ok lidas_merge setores_lidos ms escritas_ok merge setores_escritos …
-fn parse_diskstats(s: &str, keep: impl Fn(&str) -> bool) -> (u64, u64) {
-    let (mut r, mut w) = (0u64, 0u64);
-    for line in s.lines() {
-        let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 10 || !keep(f[2]) {
-            continue;
-        }
-        r += f[5].parse::<u64>().unwrap_or(0) * 512;
-        w += f[9].parse::<u64>().unwrap_or(0) * 512;
-    }
-    (r, w)
-}
-
 /// "1.71 0.73 0.55 3/744 834793" → 744 (entidades agendáveis = threads).
 fn parse_loadavg_threads(s: &str) -> Option<u64> {
     s.split_whitespace().nth(3)?.split_once('/')?.1.parse().ok()
@@ -435,67 +385,6 @@ fn read_battery(dir: &Path) -> Option<Battery> {
     None
 }
 
-/// Taxa de rede pela diferença dos contadores de /proc/net/dev na interface da rota padrão.
-#[derive(Default)]
-struct NetCounter {
-    last: Option<(Instant, String, u64, u64)>,
-}
-
-impl NetCounter {
-    fn sample(&mut self) -> Option<NetRates> {
-        let iface = fs::read_to_string("/proc/net/route").ok().and_then(|s| default_iface(&s));
-        let dev = fs::read_to_string("/proc/net/dev").ok()?;
-        let counters = parse_net_dev(&dev);
-        let (name, rx, tx) = match iface {
-            Some(i) => counters.into_iter().find(|c| c.0 == i)?,
-            None => {
-                // sem rota padrão: soma das interfaces físicas
-                let (rx, tx) = counters.iter().filter(|c| !is_virtual(&c.0)).fold((0, 0), |a, c| (a.0 + c.1, a.1 + c.2));
-                ("total".to_string(), rx, tx)
-            }
-        };
-        let now = Instant::now();
-        let rates = match &self.last {
-            Some((t, n, prx, ptx)) if *n == name => {
-                let dt = now.duration_since(*t).as_secs_f64().max(0.001);
-                Some((rx.saturating_sub(*prx) as f64 / dt, tx.saturating_sub(*ptx) as f64 / dt))
-            }
-            _ => None,
-        };
-        self.last = Some((now, name.clone(), rx, tx));
-        let (rrx, rtx) = rates?;
-        Some(NetRates {
-            iface: name,
-            rx: rrx,
-            tx: rtx,
-        })
-    }
-}
-
-fn is_virtual(name: &str) -> bool {
-    name == "lo" || ["veth", "docker", "br-", "virbr", "vnet", "tun", "tap"].iter().any(|p| name.starts_with(p))
-}
-
-fn default_iface(route: &str) -> Option<String> {
-    route.lines().skip(1).find_map(|l| {
-        let mut f = l.split_whitespace();
-        let iface = f.next()?;
-        (f.next()? == "00000000").then(|| iface.to_string())
-    })
-}
-
-/// `(interface, bytes recebidos, bytes enviados)`.
-fn parse_net_dev(s: &str) -> Vec<(String, u64, u64)> {
-    s.lines()
-        .skip(2)
-        .filter_map(|l| {
-            let (name, rest) = l.split_once(':')?;
-            let f: Vec<u64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            Some((name.trim().to_string(), *f.first()?, *f.get(8)?))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,13 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_diskstats_whole_disks_only() {
-        let s = "   8       0 sda 100 0 2000 10 50 0 4000 20 0 0 0\n   8       1 sda1 90 0 1800 9 40 0 3000 10 0 0 0\n   7       0 loop0 5 0 80 0 0 0 0 0 0 0 0\n   8      32 sdc 10 0 200 1 5 0 100 0 0 0 0\n";
-        let (r, w) = parse_diskstats(s, |n| n == "sda" || n == "sdc");
-        assert_eq!((r, w), ((2000 + 200) * 512, (4000 + 100) * 512));
-    }
-
-    #[test]
     fn parses_memory_breakdown() {
         let s = "MemTotal: 12249204 kB\nMemFree: 232816 kB\nMemAvailable: 5853332 kB\nBuffers: 547200 kB\nCached: 4458232 kB\nAnonPages: 5535596 kB\nShmem: 108188 kB\nSReclaimable: 939896 kB\nSUnreclaim: 148844 kB\nKernelStack: 12096 kB\nPageTables: 49732 kB\nHugePages_Total: 0\n";
         let m = parse_meminfo(s).unwrap();
@@ -538,15 +420,6 @@ mod tests {
         assert_eq!(m.kernel, kb(148844 + 12096 + 49732));
         assert_eq!(m.cache, kb(547200 + 4458232 + 939896 - 108188));
         assert_eq!(m.compressed, 0);
-    }
-
-    #[test]
-    fn parses_net_dev_and_route() {
-        let dev = "Inter-|   Receive |  Transmit\n face |bytes    packets\n    lo: 634 88 0 0 0 0 0 0 634 88 0 0 0 0 0 0\n  eth0: 45846993   55689    0    0    0     0          0       259  4407531   23408    0    0    0     0       0          0\n";
-        assert_eq!(parse_net_dev(dev), vec![("lo".into(), 634, 634), ("eth0".into(), 45846993, 4407531)]);
-        let route = "Iface\tDestination\tGateway\neth0\t00000000\t0100A8C0\neth0\t0000A8C0\t00000000\n";
-        assert_eq!(default_iface(route), Some("eth0".into()));
-        assert!(is_virtual("docker0") && is_virtual("lo") && !is_virtual("wlan0"));
     }
 
     #[test]

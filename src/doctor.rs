@@ -69,32 +69,6 @@ pub fn run(config_path: Option<std::path::PathBuf>, paths: &Paths) -> anyhow::Re
         warn("terminal", "sem truecolor detectado: cores convertidas para 256", "defina COLORTERM=truecolor se o seu terminal suporta")
     });
 
-    // ── Shell
-    let shell = std::env::var("SHELL").unwrap_or_default();
-    let rc = if shell.ends_with("zsh") {
-        Some(".zshrc")
-    } else if shell.ends_with("bash") {
-        Some(".bashrc")
-    } else if shell.ends_with("fish") {
-        Some(".config/fish/config.fish")
-    } else {
-        None
-    };
-    let name = shell.rsplit('/').next().unwrap_or("zsh").to_string();
-    if let Some(rc) = rc {
-        let p = config::expand_home(&format!("~/{rc}"));
-        let has = std::fs::read_to_string(&p).is_ok_and(|s| s.contains("cockpit shell-init"));
-        checks.push(if has {
-            ok("shell", format!("wrapper do `cd` em ~/{rc}"))
-        } else {
-            warn("shell", "sem o wrapper: o Enter nas worktrees só copia o `cd`", format!("echo 'eval \"$(cockpit shell-init {name})\"' >> ~/{rc}"))
-        });
-    }
-    checks.push(match crate::terminal::detect(&cfg.terminal.new_tab) {
-        Some(l) => ok("abas", format!("C e r abrem aba nova via {}", l.name())),
-        None => warn("abas", "terminal não reconhecido: C e r saem do cockpit em vez de abrir aba", "defina [terminal].new_tab no config"),
-    });
-
     // ── Sistema
     checks.push(if Path::new("/proc/pressure/memory").exists() {
         ok("sistema", "PSI disponível (detector de travamento completo)")
@@ -109,13 +83,18 @@ pub fn run(config_path: Option<std::path::PathBuf>, paths: &Paths) -> anyhow::Re
             if repos.is_empty() {
                 warn("worktrees", format!("nenhum repositório em {}", cfg.worktrees.workspaces.join(", ")), "ajuste [worktrees].workspaces e depth")
             } else {
-                ok("worktrees", format!("{} repositórios em {}", repos.len(), cfg.worktrees.workspaces.join(", ")))
+                ok("worktrees", format!("{} repositórios em {} (pastas do chat novo)", repos.len(), cfg.worktrees.workspaces.join(", ")))
             }
         }
         _ => fail("worktrees", "git não encontrado", "instale o git"),
     });
 
     // ── Claude
+    checks.push(if which("claude") {
+        ok("chat", "`claude` no PATH: o painel Chat abre conversas")
+    } else {
+        fail("chat", "`claude` não está no PATH: o painel Chat não abre", "instale o Claude Code (claude.com/code)")
+    });
     let dir = claude::claude_dir(&cfg.claude);
     let sessions = dir.join("sessions");
     checks.push(match std::fs::read_dir(&sessions) {
@@ -129,32 +108,48 @@ pub fn run(config_path: Option<std::path::PathBuf>, paths: &Paths) -> anyhow::Re
     } else {
         info("permissão", "hook não instalado; para aprovar pedidos pelo cockpit: `cockpit claude-hook install`")
     });
-    if platform::is_wsl() {
-        checks.push(match providers::desktop::find_app_dir() {
-            Some((app, _)) => ok("desktop", format!("Claude Desktop em {}", app.display())),
-            None => info("desktop", "Claude Desktop não encontrado no Windows (a aba fica vazia)"),
-        });
-    }
+    // ── Ditado
+    checks.extend(voice_checks(&cfg.voice));
 
     // ── WSL
-    if platform::is_wsl() {
-        checks.push(if which("powershell.exe") {
-            ok("wsl", "powershell.exe acessível (Wi-Fi do Windows, especificações)")
-        } else {
-            warn("wsl", "powershell.exe não está no PATH", "ative appendWindowsPath no /etc/wsl.conf")
-        });
-        if let Some(c) = wslconfig() {
-            checks.push(c);
-        }
+    if platform::is_wsl()
+        && let Some(c) = wslconfig()
+    {
+        checks.push(c);
     }
 
-    // ── Rede, Docker, Google, limites: em paralelo, com prazo
+    // ── Rede, Google, limites: em paralelo, com prazo
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let net = rt.block_on(network_checks(&cfg, paths));
     checks.extend(net);
 
     print(&checks);
     Ok(())
+}
+
+/// Gravador, transcritor e o modelo que o transcritor aponta (o arquivo depois do `-m`).
+fn voice_checks(cfg: &config::VoiceConfig) -> Vec<Check> {
+    let mut out = vec![match crate::voice::recorder(cfg) {
+        Some(r) if which(&r[0]) || Path::new(&r[0]).is_file() => ok("ditado", format!("gravador `{}`", r[0])),
+        Some(r) => fail("ditado", format!("o gravador `{}` do config não existe", r[0]), "ajuste [voice].record"),
+        None => fail("ditado", "nenhum gravador (pw-record, parecord, arecord, rec)", "instale o pipewire, o alsa-utils ou o sox"),
+    }];
+    let Some(bin) = cfg.transcribe.first() else {
+        out.push(fail("ditado", "[voice].transcribe vazio", "veja o config.example.toml"));
+        return out;
+    };
+    let bin_path = config::expand_home(bin);
+    if !which(bin) && !bin_path.is_file() {
+        out.push(fail("ditado", format!("transcritor `{bin}` não encontrado: a tecla v não transcreve"), "instale o whisper.cpp (README, seção Ditado) ou ajuste [voice].transcribe"));
+        return out;
+    }
+    let model = cfg.transcribe.iter().skip_while(|a| *a != "-m" && *a != "--model").nth(1).map(|m| config::expand_home(m));
+    out.push(match model {
+        Some(m) if !m.is_file() => fail("ditado", format!("modelo {} não existe", config::tilde(&m)), "baixe o modelo (README, seção Ditado)"),
+        Some(m) => ok("ditado", format!("transcritor `{bin}` com {}", config::tilde(&m))),
+        None => ok("ditado", format!("transcritor `{bin}`")),
+    });
+    out
 }
 
 async fn network_checks(cfg: &config::Config, paths: &Paths) -> Vec<Check> {
@@ -175,11 +170,11 @@ async fn network_checks(cfg: &config::Config, paths: &Paths) -> Vec<Check> {
         }
     };
     let ping = async {
-        let target = if cfg.system.ping_target.contains(':') { cfg.system.ping_target.clone() } else { format!("{}:443", cfg.system.ping_target) };
+        let target = "1.1.1.1:443";
         let start = std::time::Instant::now();
-        match tokio::time::timeout(t(3), tokio::net::TcpStream::connect(&target)).await {
+        match tokio::time::timeout(t(3), tokio::net::TcpStream::connect(target)).await {
             Ok(Ok(_)) => ok("ping", format!("{target} em {:.0} ms", start.elapsed().as_secs_f64() * 1000.0)),
-            _ => fail("ping", format!("{target} não respondeu"), "confira a internet ou mude [system].ping_target"),
+            _ => fail("ping", format!("{target} não respondeu"), "confira a internet"),
         }
     };
     let weather = async {
@@ -189,16 +184,6 @@ async fn network_checks(cfg: &config::Config, paths: &Paths) -> Vec<Check> {
         match tokio::time::timeout(t(8), http.get("https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0&current=temperature_2m").send()).await {
             Ok(Ok(r)) if r.status().is_success() => ok("clima", "Open-Meteo responde"),
             _ => warn("clima", "Open-Meteo não respondeu", "o painel tenta de novo sozinho"),
-        }
-    };
-    let docker = async {
-        match std::os::unix::net::UnixStream::connect("/var/run/docker.sock") {
-            Ok(_) => ok("docker", "socket acessível"),
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                warn("docker", "sem permissão no /var/run/docker.sock", "sudo usermod -aG docker $USER e abra um shell novo")
-            }
-            Err(_) if which("docker") => warn("docker", "o daemon não está rodando", "sudo service docker start"),
-            Err(_) => info("docker", "Docker não instalado (o painel fica vazio)"),
         }
     };
     let usage = async {
@@ -262,8 +247,8 @@ async fn network_checks(cfg: &config::Config, paths: &Paths) -> Vec<Check> {
             _ => warn("agenda", "Google não respondeu", "tente de novo"),
         }
     };
-    let (a, b, c, d, e, f) = tokio::join!(geo, ping, weather, docker, usage, calendar);
-    vec![a, b, c, d, e, f]
+    let (a, b, c, d, e) = tokio::join!(geo, ping, weather, usage, calendar);
+    vec![a, b, c, d, e]
 }
 
 /// Memória do WSL: sem limite e sem autoMemoryReclaim, a VM segura o cache do Linux e o

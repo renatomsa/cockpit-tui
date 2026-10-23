@@ -3,9 +3,9 @@
 Cockpit de terminal para quem passa o dia no shell. Numa tela só:
 - relógio grande com cidade, clima e mapa;
 - próxima reunião do Google Calendar, com alerta vermelho antes de começar;
-- saúde da máquina: CPU, memória, disco e rede, com aviso quando ameaça travar;
-- containers do Docker;
-- worktrees com seletor que dá `cd`;
+- chats do Claude Code embutidos, em abas, rodando dentro do cockpit;
+- saúde da máquina: CPU e memória, com aviso quando ameaça travar;
+- seletor de pasta para o chat novo, com os repositórios e worktrees;
 - conversas do Claude Code, com tokens por rodada e limites do plano.
 
 Escrito em Rust. Parado, usa menos de 1 % de CPU e cerca de 30 MB de memória.
@@ -15,8 +15,7 @@ Escrito em Rust. Parado, usa menos de 1 % de CPU e cerca de 30 MB de memória.
 ```sh
 CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git ssh://git@github.com/renatomsa/cockpit-tui.git
 cockpit config init                                    # ~/.config/cockpit/config.toml comentado
-echo 'eval "$(cockpit shell-init zsh)"' >> ~/.zshrc    # para o Enter trocar de pasta (bash e fish também)
-exec zsh && cockpit
+cockpit
 ```
 
 O repositório é privado. A variável `CARGO_NET_GIT_FETCH_WITH_CLI` faz o cargo usar o `git` do sistema, com a sua chave SSH do GitHub. Para não repeti-la, ponha `[net]` com `git-fetch-with-cli = true` em `~/.cargo/config.toml`. Para usar HTTPS em vez de SSH, rode `gh auth setup-git` uma vez e use `--git https://github.com/renatomsa/cockpit-tui`.
@@ -29,11 +28,10 @@ O repositório é privado. A variável `CARGO_NET_GIT_FETCH_WITH_CLI` faz o carg
 
 | Painel | O que mostra |
 |---|---|
-| **Relógio** | cidade (pelo IP ou fixa no config) e relógios extras; próxima reunião; clima e próximas horas (Open-Meteo); mapa-múndi com a cidade |
+| **Relógio** | no alto à direita: cidade (pelo IP ou fixa no config) e relógios extras; próxima reunião; clima e próximas horas (Open-Meteo) |
 | **Agenda** | reuniões das próximas 48 h, com link da chamada |
-| **Docker** | containers rodando (o `docker ps`, sem `-a`): saúde, portas, projeto compose |
-| **Worktrees · Claude** | três abas: worktrees dos repositórios (branch, status da melhoria, alterações, ↑↓, idade, tamanho); **Claude Code**, com as conversas abertas e encerradas há pouco, tokens da rodada; **Claude Desktop** (no WSL), com as sessões de Code e Cowork do app do Windows |
-| **Sistema** | caixas de CPU, Memória, Disco e Rede com detalhe por tipo de uso; Wi-Fi e tráfego do Windows no WSL; maiores ofensores de CPU e memória e, logo abaixo, os limites de 5 h e da semana do Claude; especificações da máquina |
+| **Chat** | o `claude` rodando dentro do cockpit, um por aba; é o painel grande, no alto à esquerda, com a agenda embaixo |
+| **Sistema** | abaixo do relógio: caixas de CPU e Memória com detalhe por tipo de uso; maiores ofensores de CPU e memória e, logo abaixo, os limites de 5 h e da semana do Claude |
 
 Alertas:
 - **Reunião:** a borda fica amarela a 15 min. De 5 min antes a 5 min depois do início, o relógio inteiro fica vermelho e piscando.
@@ -47,41 +45,36 @@ A tecla `i` mostra a legenda dos símbolos do painel em foco.
 |---|---|---|
 | geral | `Tab` / `Shift+Tab` | troca o painel em foco |
 | | `t` / `T` | próximo / anterior tema |
+| | `v` · `Esc` | ditado: grava; `v` de novo transcreve e escreve no chat, sem Enter · descarta |
 | | `i` · `?` · `x` | legenda · ajuda · dispensa o aviso da barra |
-| | `q` / `Ctrl+C` | sai |
+| | `q` / `Ctrl+C` | sai (com chats abertos, pede confirmação: sair encerra todos) |
 | alerta de reunião | qualquer tecla · `z` · `o` | para o alerta · adia 5 min · abre a chamada |
 | Agenda | `o` · `y` | abre a chamada · copia o link |
-| Docker | `K` · `X` | para o container · derruba tudo (`compose down --remove-orphans` por projeto), com confirmação |
-| Worktrees | `← →` | troca entre as abas Worktrees, Claude Code e Claude Desktop |
-| | `Enter` · `C` | vai para a pasta · abre `claude --continue` numa aba nova |
-| | `s` | status da melhoria: shape, wip, revisão manual, deploy, finalizado (↑↓ e Enter, `1`-`5` direto, `0` limpa) |
-| | `/` · `D` | filtra (por nome, branch ou status) · exclui a worktree (dois avisos: `y` e depois Enter) |
-| Claude Code | `Enter` · `r` | vai para a pasta · retoma uma conversa encerrada numa aba nova |
-| qualquer painel | `a` | permite desta vez o pedido de permissão (o da conversa selecionada, ou o único pendente) |
-| Sistema | `s` | teste de velocidade (download e upload) |
-| | `← →` `↑↓` · `K` | escolhe processo · encerra com SIGTERM, com confirmação |
+| Chat | `n` · `Enter` | chat novo (escolha a pasta: digitar filtra, Enter abre) · digita no chat |
+| | `← →` · `1`-`9` · `x` | troca de chat · vai direto · fecha (encerra o `claude` dele) |
+| digitando no chat | `Ctrl+Q` | para de digitar: as teclas voltam ao cockpit (todas as outras, inclusive `Tab`, `Esc` e `Ctrl+C`, vão para o `claude`) |
+| | `Alt+V` · `Esc` | ditado, como o `v` · descarta (o `Esc` só fica com o cockpit enquanto o ditado está ligado) |
+| | `Alt+1`-`9` · roda do mouse ou `Shift+PgUp/PgDn` | troca de chat · rola o histórico (Shift+arrastar seleciona texto do cockpit) |
+| qualquer painel | `a` | permite desta vez o pedido de permissão, quando há um só pendente |
+| Sistema | `← →` `↑↓` · `K` | escolhe processo · encerra com SIGTERM, com confirmação |
 
 ## Comandos
 
 | Comando | O que faz |
 |---|---|
 | `cockpit doctor` | confere cada peça e diz como resolver o que falta |
-| `cockpit status [estado]` / `status --list` | status da worktree em que você está; sem estado, abre o seletor. Aceita `shape`, `wip`, `revisao`, `deploy`, `finalizado` (ou `1`-`5`) e `nenhum`; `--dir` aponta outra worktree. O cockpit aberto atualiza a coluna na hora |
 | `cockpit theme list` / `install <arquivo ou URL>` / `remove <nome>` | gerencia temas |
 | `cockpit config init` / `config path` | cria o config / mostra onde ficam config, temas, estado e log |
 | `cockpit calendar add <endereço iCal>` / `list` / `remove <n>` | conecta a agenda pelo endereço iCal |
 | `cockpit auth google` | conecta o Google Calendar por OAuth (alternativa) |
 | `cockpit claude-hook install` / `uninstall` / `status` | liga o "permitir desta vez" pelo cockpit |
-| `cockpit shell-init zsh\|bash\|fish` | função que faz o Enter trocar de pasta |
 | `cockpit --demo-agenda` | reuniões de exemplo, para ver o alerta sem o Google |
 
 ## Permitir desta vez
 
 Com o hook instalado (`cockpit claude-hook install`, que acrescenta um hook `PermissionRequest` ao `~/.claude/settings.json` e guarda um backup), as conversas do Claude Code que pedirem permissão aparecem no cockpit com o que vão fazer, por exemplo `◆ Bash: git push origin main`. O `a` permite **só aquela vez**.
 
-O diálogo continua aparecendo no terminal, e quem responder primeiro vale. Se você responder lá, o hook percebe e sai sozinho. Cada pedido tem um código aleatório, e só uma resposta com esse código vale; os pedidos ficam numa pasta privada (`~/.local/state/cockpit/permissions`, 0700). O hook vale para as sessões abertas depois da instalação. As sessões do Claude Desktop aparecem na aba própria, mas só para leitura: os pedidos delas se respondem no app.
-
-A aba Claude Desktop lê do disco do Windows as sessões de Code e as tarefas do modo agente (Cowork) do app, dos últimos 7 dias, com o estado ao vivo e os tokens da rodada. As conversas comuns de chat ficam no servidor do claude.ai e não aparecem.
+O diálogo continua aparecendo no terminal, e quem responder primeiro vale. Se você responder lá, o hook percebe e sai sozinho. Cada pedido tem um código aleatório, e só uma resposta com esse código vale; os pedidos ficam numa pasta privada (`~/.local/state/cockpit/permissions`, 0700). O hook vale para as sessões abertas depois da instalação.
 
 ## Configuração
 
@@ -104,7 +97,7 @@ label = "Orlando"
 tz = "America/New_York"
 
 [worktrees]
-workspaces = ["~"]                # onde procurar repositórios
+workspaces = ["~"]                # onde procurar repositórios (as opções do chat novo)
 ```
 
 **Temas embutidos** (`t` percorre todos, na ordem):
@@ -139,12 +132,29 @@ A agenda é relida a cada 5 min. Os eventos recorrentes são expandidos, e ficam
 
 A leitura do `.ics` segue a abordagem do [meridian](https://github.com/victorlcampos/meridian) (MIT).
 
+## Ditado
+
+`v` (ou `Alt+V` digitando no chat) começa a gravar o microfone; a barra mostra `● gravando 0:07`. De novo, a gravação para, é transcrita e o texto entra no chat selecionado sem Enter, para você revisar antes de mandar. Sem chat aberto, vai para a área de transferência. `Esc` descarta.
+
+Tudo roda local: um gravador do sistema (`pw-record`, `parecord`, `arecord` ou o `rec` do sox) e o [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Para instalar o whisper.cpp no caminho que o config padrão usa:
+
+```sh
+git clone --depth 1 https://github.com/ggml-org/whisper.cpp ~/.local/share/whisper.cpp
+cd ~/.local/share/whisper.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j --target whisper-cli
+ln -sf "$PWD/build/bin/whisper-cli" ~/.local/bin/whisper-cli
+curl -L -o models/ggml-small.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+cockpit doctor     # confere gravador, transcritor e modelo
+```
+
+Sem `cmake`: `uv tool install cmake`. O modelo `small` (466 MB) é o menor que acerta bem em português; numa CPU de notebook, uma frase leva uns 3 a 4 s. Para trocar o transcritor (outro modelo, outra ferramenta), ajuste `[voice].transcribe`: qualquer comando que leia o WAV e imprima o texto serve.
+
 ## Privacidade e custo
 
 - **Limites do plano:** o cockpit lê o login do Claude Code em `~/.claude/.credentials.json` e consulta `api.anthropic.com` a cada 3 min. O token nunca é renovado nem gravado. Para desligar: `[claude].usage_limits = false`.
-- **Rede:** o teste de velocidade só roda quando você aperta `s` e baixa 25 MB e envia 10 MB para a Cloudflare. A cidade vem de ipapi.co ou ipinfo.io, e o clima, da Open-Meteo.
-- **WSL:** um PowerShell fica aberto para ler o Wi-Fi do Windows (cerca de 0,5 % de CPU e 80 MB). Para desligar: `[network].wsl_host = false`.
-- **Git:** o `git status` roda a cada 30 s com `--no-optional-locks`, então nunca disputa o índice com o seu git. O tamanho das worktrees é recalculado a cada 10 min.
+- **Rede:** a cidade vem de ipapi.co ou ipinfo.io, e o clima, da Open-Meteo.
+- **Ditado:** o áudio é gravado num arquivo temporário, transcrito na máquina e apagado em seguida.
+- **Git:** a lista de worktrees (`git worktree list`) é relida a cada 60 s ou quando uma worktree é criada ou removida.
 
 ## Desenvolvimento
 

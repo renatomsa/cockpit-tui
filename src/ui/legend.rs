@@ -9,16 +9,11 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, Paragraph},
 };
 
-use super::{
-    system::level_style,
-    worktrees::{status_icon, status_style},
-};
+use super::system::level_style;
 use crate::{
     app::state::{AppState, Panel},
     danger::Level,
-    providers::claude::Status,
     theme::Theme,
-    wt_status::WtStatus,
 };
 
 /// (símbolo como aparece no painel, explicação)
@@ -26,15 +21,6 @@ type Entry = (Span<'static>, &'static str);
 
 fn st(text: &'static str, style: Style) -> Span<'static> {
     Span::styled(text, style)
-}
-
-fn sessions(t: &Theme) -> Vec<Entry> {
-    vec![
-        (status_icon(t, Status::Waiting), "esperando você: permissão, pergunta ou diálogo aberto"),
-        (status_icon(t, Status::Busy), "trabalhando"),
-        (status_icon(t, Status::Shell), "rodando um comando de shell"),
-        (status_icon(t, Status::Idle), "parada, esperando um novo pedido"),
-    ]
 }
 
 fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
@@ -56,18 +42,14 @@ fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
                 (st(" tela vermelha ", Style::new().fg(t.alert_fg).bg(t.alert_bg).add_modifier(Modifier::BOLD)), "reunião começando: qualquer tecla para, `z` adia, `o` abre a chamada"),
             ],
         ),
-        Panel::Docker => (
-            "Docker",
+        Panel::Chat => (
+            "Chat",
             vec![
-                (st("●", Style::new().fg(t.ok)), "rodando e saudável (healthcheck ok)"),
-                (st("●", Style::new().fg(t.accent)), "rodando, sem healthcheck"),
-                (st("●", Style::new().fg(t.warn)), "healthcheck ainda iniciando"),
-                (st("●", Style::new().fg(t.alert)), "rodando, mas o healthcheck falha"),
-                (st("5432,6379", Style::new().fg(t.highlight)), "portas publicadas no host"),
-                (st("v360", muted), "projeto do docker compose (vazio = container solto)"),
-                (st("Up 4 weeks", muted), "há quanto tempo está de pé, como no docker ps"),
-                (st("K", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "para o container selecionado (docker stop, pede confirmação)"),
-                (st("X", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "derruba tudo: compose down --remove-orphans em cada projeto e stop nos soltos"),
+                (st(" 1 v360 ", Style::new().fg(t.bg).bg(t.accent).add_modifier(Modifier::BOLD)), "chat selecionado; o número troca direto (Alt+número enquanto digita)"),
+                (st(" 2 api ✕ ", Style::new().fg(t.muted).add_modifier(Modifier::CROSSED_OUT)), "o claude desse chat encerrou; x fecha a aba"),
+                (st("borda", Style::new().fg(t.highlight)), "digitando: as teclas vão para o claude, até o Ctrl+Q"),
+                (st("Shift+PgUp", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "rola o chat (ou a roda do mouse); digitar volta ao fim"),
+                (st(" ● gravando 0:07 ", Style::new().fg(t.bg).bg(t.alert).add_modifier(Modifier::BOLD)), "ditado: `v` (Alt+V digitando) para e transcreve; o texto entra no chat sem Enter"),
             ],
         ),
         Panel::Agenda => (
@@ -82,30 +64,6 @@ fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
                 (st("z", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "no alerta vermelho: adia 5 min; qualquer outra tecla para; `o` abre a chamada"),
             ],
         ),
-        Panel::Worktrees => {
-            let mut v = vec![
-                (st("▸", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "worktree selecionada"),
-                (st("├ └", Style::new().fg(t.border)), "worktrees do repositório acima"),
-                (st("(principal)", fg), "a pasta principal do repositório"),
-                (st("feat/x", Style::new().fg(t.highlight)), "branch em que a worktree está"),
-                (st("wip", status_style(t, WtStatus::Wip)), "status da melhoria (`s` escolhe; `cockpit status` no terminal)"),
-                (st("shape", status_style(t, WtStatus::Shape)), "desenhando a solução, antes do código"),
-                (st("revisão", status_style(t, WtStatus::RevisaoManual)), "revisão manual: esperando alguém testar ou revisar"),
-                (st("deploy", status_style(t, WtStatus::Deploy)), "indo para produção"),
-                (st("finalizado", status_style(t, WtStatus::Finalizado)), "entregue"),
-                (st("✎ 4", Style::new().fg(t.warn)), "arquivos alterados ou novos, ainda sem commit"),
-                (st("✓", Style::new().fg(t.ok)), "nada pendente"),
-                (st("↑2", Style::new().fg(t.accent)), "commits seus que ainda não subiram"),
-                (st("↓5", Style::new().fg(t.accent)), "commits do remoto que você ainda não puxou"),
-                (st("22h", muted), "idade do último commit (s, m, h, d; mo = meses; a = anos)"),
-                (st("3.1G", muted), "espaço em disco (… = ainda calculando)"),
-                (st("sumiu", Style::new().fg(t.alert)), "a pasta foi apagada; `git worktree prune` limpa a lista"),
-                (st("D", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "exclui a worktree (y no 1º aviso, Enter no 2º); a branch continua"),
-                (st("← →", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "troca para a aba Claude"),
-            ];
-            v.extend(sessions(t));
-            ("Worktrees", v)
-        }
         Panel::System => (
             "Sistema",
             vec![
@@ -115,45 +73,18 @@ fn entries(panel: Panel, t: &Theme) -> (&'static str, Vec<Entry>) {
                 (st("MEM  93%", level_style(t, Level::Warn)), "aviso: perto do limite configurado"),
                 (st("MEM  96%", level_style(t, Level::Critical)), "crítico, em vermelho negrito: risco de travar; os maiores ofensores também ficam vermelhos"),
                 (st("load 1.2 0.9", muted), "processos na fila: média de 1, 5 e 15 min (mais que o nº de núcleos = fila)"),
-                (st("PSI", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "% do tempo em que algo esperou CPU, memória ou disco (10 s); mem alta = travamento chegando"),
-                (st("↓ ↑", Style::new().fg(t.spark)), "download e upload agora (no WSL, do Windows inteiro; o do WSL vem ao lado)"),
-                (st("sinal ██ 85%", Style::new().fg(t.ok)), "força do Wi-Fi do Windows, com canal, faixa e velocidade do link"),
-                (st("s", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), "teste de velocidade: baixa e envia alguns MB para a Cloudflare"),
-                (st("±4", muted), "variação do ping (jitter), em ms"),
-                (st("perda 0%", muted), "tentativas sem resposta entre as últimas 30"),
                 (st("×10", fg), "processos com o mesmo nome, somados"),
                 (st("107%", fg), "CPU em % de um núcleo (passa de 100 quando usa vários)"),
                 (st("Sessão 5h ━━", Style::new().fg(t.gauge_low)), "limites do Claude: quanto do limite de 5 h do plano já foi usado (o mesmo do /usage)"),
                 (st("Semana ━━", Style::new().fg(t.gauge_low)), "quanto do limite semanal já foi usado; ao lado, quando reinicia"),
-                (st("MÁQUINA", muted), "especificações; no WSL, da máquina real, com o que o WSL recebe entre parênteses"),
-                (st("(WSL usa 6)", muted), "núcleos ou memória que a VM do WSL enxerga (ajuste em .wslconfig)"),
             ],
         ),
-        Panel::Sessions => {
-            let mut v = sessions(t);
-            v.extend([
-                (status_icon(t, Status::Ended), "encerrada há pouco; `r` retoma numa aba nova"),
-                (st("bg", muted), "conversa em segundo plano (claude --bg)"),
-                (st("›", muted), "último pedido que você fez"),
-                (st("v360/cfs", muted), "repositório/worktree em que a conversa está"),
-                (st("há 8m", muted), "desde a última mudança de status"),
-                (st(" a permitir desta vez ", Style::new().fg(t.bg).bg(t.warn).add_modifier(Modifier::BOLD)), "pedido de permissão (Bash, Edit…): `a` aprova só esta vez; o terminal continua valendo"),
-                (st("Claude Desktop", fg), "aba ao lado: sessões de Code e Cowork do app do Windows (só leitura)"),
-                (st("⟳ rodando", Style::new().fg(t.accent)), "tokens da rodada em andamento, desde o seu último pedido"),
-                (st("última rodada", muted), "tokens da rodada que terminou"),
-                (st("3.2k saída", Style::new().fg(t.spark)), "tokens gerados pelo Claude (texto, código e raciocínio)"),
-                (st("1.4M processados", fg), "tudo que passou pelas chamadas da rodada, incluindo cache lido"),
-                (st("contexto 145k", fg), "tamanho da conversa enviada na última chamada"),
-                (st("2 subagentes", muted), "subagentes disparados na rodada (o gasto deles entra na soma)"),
-            ]);
-            ("Claude", v)
-        }
     }
 }
 
 pub fn draw(f: &mut Frame, area: Rect, s: &AppState) {
     let t = s.theme();
-    let (title, list) = entries(s.active_panel(), t);
+    let (title, list) = entries(s.focus, t);
     let sym_w = list.iter().map(|(sp, _)| sp.content.chars().count()).max().unwrap_or(4) + 3;
     let mut lines: Vec<Line> = list
         .into_iter()

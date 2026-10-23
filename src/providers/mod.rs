@@ -3,14 +3,8 @@
 
 pub mod calendar;
 pub mod claude;
-pub mod desktop;
-pub mod docker;
 pub mod geo;
 pub mod git;
-pub mod hostnet;
-pub mod ping;
-pub mod specs;
-pub mod speedtest;
 pub mod system;
 pub mod transcript;
 pub mod usage;

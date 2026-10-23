@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
+use std::{collections::HashSet, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -11,23 +8,14 @@ use crate::{
     providers::{
         Snapshot,
         calendar::{CalendarSnapshot, Event},
-        claude::{Session, SessionsSnapshot, Status},
-        desktop::DesktopSnapshot,
-        docker::DockerSnapshot,
+        claude::{SessionsSnapshot, Status},
         geo::Geo,
-        git::{Worktree, WorktreesSnapshot},
-        hostnet::HostNet,
-        speedtest::{Phase, SpeedResult},
+        git::WorktreesSnapshot,
         weather::Weather,
-        ping::PingSnapshot,
-        specs::Specs,
         system::SystemSnapshot,
         usage::UsageSnapshot,
     },
-    shell::ExitTarget,
-    terminal::Launcher,
     theme::{Theme, ThemeRegistry},
-    wt_status::Statuses,
 };
 
 /// Painéis que recebem foco com Tab, na ordem de navegação.
@@ -35,15 +23,14 @@ use crate::{
 pub enum Panel {
     Hero,
     Agenda,
-    Docker,
-    Worktrees,
+    /// Chats do Claude Code embutidos.
+    Chat,
     System,
-    Sessions,
 }
 
 impl Panel {
-    /// `Sessions` não recebe foco direto: é a aba "Claude" do painel de Worktrees.
-    const ORDER: [Panel; 5] = [Panel::Hero, Panel::Agenda, Panel::Docker, Panel::Worktrees, Panel::System];
+    /// Na ordem da tela: chat e agenda à esquerda, relógio e sistema à direita.
+    const ORDER: [Panel; 4] = [Panel::Chat, Panel::Agenda, Panel::Hero, Panel::System];
 
     pub fn next(self) -> Self {
         let i = Self::ORDER.iter().position(|p| *p == self).unwrap();
@@ -54,25 +41,6 @@ impl Panel {
         let i = Self::ORDER.iter().position(|p| *p == self).unwrap();
         Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
     }
-}
-
-/// Aba do painel que junta worktrees e conversas do Claude.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WtTab {
-    #[default]
-    Worktrees,
-    /// Claude Code (CLI) no WSL.
-    Claude,
-    /// Claude Desktop (Windows).
-    Desktop,
-}
-
-/// Teste de velocidade: o que está rodando agora e o último resultado.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SpeedState {
-    pub running: Option<(Phase, f64)>,
-    pub last: Option<SpeedResult>,
-    pub error: Option<String>,
 }
 
 /// Coluna de processos selecionada no painel de sistema.
@@ -101,35 +69,37 @@ pub struct KillTarget {
 pub enum Confirm {
     /// SIGTERM num processo (painel Sistema).
     Kill(KillTarget),
-    /// Comandos do Docker: título do diálogo, linhas explicando o que vai acontecer.
-    Docker { title: String, lines: Vec<String>, cmds: Vec<crate::providers::docker::DockerCmd> },
-    /// Excluir uma worktree: passo 1 pergunta (`y`), passo 2 avisa o que se perde (Enter).
-    RemoveWorktree(RemoveWt),
+    /// Fechar um chat cujo `claude` ainda está rodando.
+    CloseChat { id: u64, title: String },
+    /// Sair do cockpit com chats abertos (eles são encerrados).
+    Quit { chats: usize },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoveWt {
-    pub step: u8,
-    pub name: String,
-    pub path: PathBuf,
-    /// Repositório principal, onde o `git worktree remove` roda.
-    pub repo: PathBuf,
-    pub branch: Option<String>,
-    /// Arquivos alterados ou novos, sem commit.
-    pub dirty: u32,
-    /// Conversas do Claude abertas dentro dela.
-    pub sessions: usize,
-    /// A pasta já não existe: basta `git worktree prune`.
-    pub prunable: bool,
-}
-
-/// Seletor de status aberto com `s` numa worktree.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusPick {
-    pub path: PathBuf,
-    pub name: String,
-    /// Posição em `wt_status::CHOICES`.
+/// Seletor de pasta do chat novo (tecla `n`): digitar filtra, Enter abre.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChatPick {
+    pub query: String,
+    /// Posição na lista filtrada.
     pub sel: usize,
+}
+
+/// Ditado (tecla `v`, ou Alt+V digitando no chat).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VoiceState {
+    #[default]
+    Idle,
+    Recording { since: DateTime<Utc> },
+    /// Gravação parada; esperando o texto do transcritor.
+    Transcribing,
+}
+
+/// Uma pasta onde dá para abrir um chat: a pessoal ou uma worktree de repositório.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatDir {
+    /// "v360" na principal, "v360/feat-x" numa worktree.
+    pub label: String,
+    pub branch: Option<String>,
+    pub path: PathBuf,
 }
 
 /// Todo o estado da tela. Só `update` escreve aqui; só `ui::draw` lê.
@@ -141,15 +111,12 @@ pub struct AppState {
     pub theme_idx: usize,
     pub geo: Snapshot<Geo>,
     pub system: Snapshot<SystemSnapshot>,
-    pub ping: Snapshot<PingSnapshot>,
     pub proc_sel: ProcSel,
     pub confirm: Option<Confirm>,
     pub self_pid: u32,
     pub worktrees: Snapshot<WorktreesSnapshot>,
     pub sessions: Snapshot<SessionsSnapshot>,
     pub usage: Snapshot<UsageSnapshot>,
-    pub specs: Snapshot<Specs>,
-    pub docker: Snapshot<DockerSnapshot>,
     pub calendar: Snapshot<CalendarSnapshot>,
     /// `--demo-agenda`: eventos de exemplo em vez do Google.
     pub demo_agenda: bool,
@@ -158,34 +125,20 @@ pub struct AppState {
     /// Reuniões cujo alerta o usuário já parou (`Event::key`).
     pub dismissed: HashSet<String>,
     pub agenda_sel: usize,
-    pub wt_tab: WtTab,
-    pub desktop: Snapshot<DesktopSnapshot>,
-    pub desktop_sel: usize,
-    /// Wi-Fi e tráfego do Windows (só no WSL).
-    pub host_net: Snapshot<HostNet>,
+    /// Chats embutidos, na ordem das abas.
+    pub chats: Vec<crate::chat::ChatView>,
+    pub chat_sel: usize,
+    /// As teclas vão para o `claude` do chat selecionado (Ctrl+Q volta).
+    pub chat_typing: bool,
+    /// Seletor de pasta aberto pelo `n`.
+    pub chat_pick: Option<ChatPick>,
+    pub voice: VoiceState,
+    /// Número da gravação atual: o texto de uma gravação descartada chega com outro.
+    pub voice_take: u64,
     pub weather: Snapshot<Weather>,
-    pub speed: SpeedState,
     /// Arquivo de config em uso (a recarga a quente observa ele).
     pub config_path: PathBuf,
     pub truecolor: bool,
-    pub docker_sel: usize,
-    /// Sessões vivas em cada worktree (caminho da worktree → índices em `sessions.live`).
-    pub wt_sessions: HashMap<PathBuf, Vec<usize>>,
-    /// Índice na lista filtrada de worktrees.
-    pub wt_sel: usize,
-    /// Status de cada worktree (shape, wip…), espelho de `worktree-status.toml`.
-    pub wt_status: Statuses,
-    pub status_pick: Option<StatusPick>,
-    pub filter: String,
-    pub filter_editing: bool,
-    /// Índice em `live` seguido de `recent`.
-    pub sess_sel: usize,
-    /// Rodando pelo wrapper do shell (`--cd-file`): Enter pode sair e trocar a pasta.
-    pub has_cd_file: bool,
-    /// Destino escolhido; o `main` grava no arquivo do wrapper ao sair.
-    pub exit: Option<ExitTarget>,
-    /// Como abrir uma aba nova de terminal (detectado na partida).
-    pub launcher: Option<Launcher>,
     /// Legenda dos símbolos do painel em foco (tecla `i`).
     pub show_legend: bool,
     /// Fuso da cidade atual (geolocalização → config → sistema → UTC).
@@ -212,44 +165,31 @@ impl AppState {
             theme_idx,
             geo: Snapshot::default(),
             system: Snapshot::default(),
-            ping: Snapshot::default(),
             proc_sel: ProcSel::default(),
             confirm: None,
             self_pid: std::process::id(),
             worktrees: Snapshot::default(),
             sessions: Snapshot::default(),
             usage: Snapshot::default(),
-            specs: Snapshot::default(),
-            docker: Snapshot::default(),
             calendar: Snapshot::default(),
             demo_agenda: false,
             snoozed_until: None,
             dismissed: HashSet::new(),
             agenda_sel: 0,
-            wt_tab: WtTab::Worktrees,
-            desktop: Snapshot::default(),
-            desktop_sel: 0,
-            host_net: Snapshot::default(),
+            chats: Vec::new(),
+            chat_sel: 0,
+            chat_typing: false,
             weather: Snapshot::default(),
-            speed: SpeedState::default(),
             config_path: PathBuf::new(),
             truecolor: true,
-            docker_sel: 0,
-            wt_sessions: HashMap::new(),
-            wt_sel: 0,
-            wt_status: Statuses::new(),
-            status_pick: None,
-            filter: String::new(),
-            filter_editing: false,
-            sess_sel: 0,
-            has_cd_file: false,
-            exit: None,
-            launcher: None,
+            chat_pick: None,
+            voice: VoiceState::Idle,
+            voice_take: 0,
             show_legend: false,
             tz: system_tz,
             system_tz,
             extra_clocks,
-            focus: Panel::Worktrees,
+            focus: Panel::Chat,
             show_help: false,
             notices,
             quit: false,
@@ -258,25 +198,16 @@ impl AppState {
         s
     }
 
-    /// Painel que recebe as teclas: no painel de worktrees, depende da aba.
-    pub fn active_panel(&self) -> Panel {
-        match (self.focus, self.wt_tab) {
-            (Panel::Worktrees, WtTab::Claude | WtTab::Desktop) => Panel::Sessions,
-            (p, _) => p,
-        }
-    }
-
     /// Aplica um config relido do disco. Devolve as seções que só valem ao reabrir
     /// (lidas pelos providers na partida).
     pub fn apply_config(&mut self, new: Config) -> Vec<&'static str> {
         let old = &self.config;
         let d = |x: &dyn std::fmt::Debug| format!("{x:?}");
         let mut restart = Vec::new();
-        let checks: [(&'static str, bool); 7] = [
+        let checks: [(&'static str, bool); 6] = [
             ("[system]", d(&old.system) != d(&new.system)),
             ("[worktrees]", d(&old.worktrees) != d(&new.worktrees)),
             ("[location]", d(&old.location) != d(&new.location)),
-            ("[network]", d(&old.network) != d(&new.network)),
             (
                 "[claude]",
                 (&old.claude.dir, old.claude.usage_limits, old.claude.usage_refresh_secs, old.claude.recent_hours, old.claude.recent_max)
@@ -360,31 +291,31 @@ impl AppState {
         }
     }
 
-    /// Worktrees visíveis (com o filtro aplicado), como (repo, worktree).
-    pub fn visible_worktrees(&self) -> Vec<(usize, usize)> {
-        let Some(d) = &self.worktrees.data else { return Vec::new() };
-        let needle = self.filter.to_lowercase();
-        let mut out = Vec::new();
-        for (ri, r) in d.repos.iter().enumerate() {
-            for (wi, w) in r.worktrees.iter().enumerate() {
-                let status = self.wt_status.get(&w.path).map_or("", |s| s.label());
-                let hay = format!("{}/{} {} {status}", r.name, w.name, w.branch.as_deref().unwrap_or("")).to_lowercase();
-                if fuzzy_match(&needle, &hay) {
-                    out.push((ri, wi));
+    pub fn selected_chat(&self) -> Option<&crate::chat::ChatView> {
+        self.chats.get(self.chat_sel)
+    }
+
+    /// Chats com o `claude` ainda rodando.
+    pub fn live_chats(&self) -> usize {
+        self.chats.iter().filter(|c| !c.exited).count()
+    }
+
+    /// Pastas para um chat novo, filtradas: a pessoal primeiro, depois as worktrees dos
+    /// repositórios encontrados.
+    pub fn chat_dirs(&self, query: &str) -> Vec<ChatDir> {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into());
+        let mut out = vec![ChatDir { label: "~".into(), branch: None, path: home }];
+        if let Some(d) = &self.worktrees.data {
+            for r in &d.repos {
+                for w in r.worktrees.iter().filter(|w| !w.prunable) {
+                    let label = if w.is_main { r.name.clone() } else { format!("{}/{}", r.name, w.name) };
+                    out.push(ChatDir { label, branch: w.branch.clone(), path: w.path.clone() });
                 }
             }
         }
+        let needle = query.to_lowercase();
+        out.retain(|d| fuzzy_match(&needle, &format!("{} {}", d.label, d.branch.as_deref().unwrap_or("")).to_lowercase()));
         out
-    }
-
-    pub fn selected_worktree(&self) -> Option<&Worktree> {
-        let (ri, wi) = *self.visible_worktrees().get(self.wt_sel)?;
-        self.worktrees.data.as_ref()?.repos.get(ri)?.worktrees.get(wi)
-    }
-
-    /// Vivas e depois recentes, na ordem em que aparecem no painel.
-    pub fn session_list(&self) -> Vec<&Session> {
-        self.sessions.data.as_ref().map(|d| d.live.iter().chain(&d.recent).collect()).unwrap_or_default()
     }
 
     /// Pedidos de permissão que o cockpit pode aprovar agora, do mais antigo ao mais novo.
@@ -396,35 +327,6 @@ impl AppState {
 
     pub fn waiting_count(&self) -> usize {
         self.sessions.data.as_ref().map_or(0, |d| d.count(Status::Waiting))
-    }
-
-    /// Associa cada sessão viva à worktree mais específica que contém o `cwd` dela
-    /// (a principal contém as de `.claude/worktrees`, então ganha o prefixo mais longo).
-    pub fn recompute_wt_sessions(&mut self) {
-        self.wt_sessions.clear();
-        let (Some(w), Some(sess)) = (&self.worktrees.data, &self.sessions.data) else { return };
-        let paths: Vec<&PathBuf> = w.repos.iter().flat_map(|r| r.worktrees.iter().map(|w| &w.path)).collect();
-        for (i, s) in sess.live.iter().enumerate() {
-            if let Some(best) = paths.iter().filter(|p| s.cwd.starts_with(p)).max_by_key(|p| p.as_os_str().len()) {
-                self.wt_sessions.entry((*best).clone()).or_default().push(i);
-            }
-        }
-    }
-
-    /// Nome curto de onde a sessão está: a worktree, se estiver numa, ou a pasta.
-    pub fn session_place(&self, s: &Session) -> String {
-        if let Some(w) = &self.worktrees.data {
-            let best = w
-                .repos
-                .iter()
-                .flat_map(|r| r.worktrees.iter().map(move |w| (r, w)))
-                .filter(|(_, w)| s.cwd.starts_with(&w.path))
-                .max_by_key(|(_, w)| w.path.as_os_str().len());
-            if let Some((r, w)) = best {
-                return if w.is_main { r.name.clone() } else { format!("{}/{}", r.name, w.name) };
-            }
-        }
-        s.cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| crate::config::tilde(&s.cwd))
     }
 
     pub fn recompute_tz(&mut self) {
